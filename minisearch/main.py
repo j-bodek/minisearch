@@ -34,13 +34,15 @@ class Index:
         return tokens.items()
 
     def add(self, doc: str):
-        doc_id = uuid.uuid4()
+        doc_id = str(uuid.uuid4())
         self._documents[doc_id] = doc
 
         for token, group in self._tokenize_group(doc):
             self._index[token].append((doc_id, (len(group), tuple(group))))
 
-    def search(self, query: str):
+        return doc_id
+
+    def search(self, query: str, slop: int = 0):
         results = []
 
         docs = {}
@@ -60,8 +62,9 @@ class Index:
                     indexes = []
 
                     for index in group[1]:
-                        if index - 1 in docs[doc_id]:
-                            indexes.append(index)
+                        for s in range(1, slop+2):
+                            if index - s in docs[doc_id]:
+                                indexes.append(index)
 
                 if indexes:
                     new_docs[doc_id] = indexes
@@ -80,5 +83,5 @@ for d in data:
     index.add(d)
 
 
-for r in index.search("I am your father"):
+for r in index.search("Never told what happened", slop=1):
     print(r)
