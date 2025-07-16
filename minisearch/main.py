@@ -1,20 +1,29 @@
+import re
 import uuid
+import Stemmer
+from stop import stop_words
 from collections import defaultdict
 
+
 data = [
-    "droid you me look",
-    "obi wan never told what happed to father",
-    "father never told me that",
+    "These     are not the droids you are looking for.",
+    "Obi-Wan never told you what happened to your father.",
+    "No. I am your father.",
 ]
 
 
 class Index:
     def __init__(self):
+        self._stemmer = Stemmer.Stemmer("english")
         self._index = defaultdict(list)
         self._documents = {}
 
     def _tokenize(self, data: str):
-        return data.lower().split(" ")
+        for token in re.sub("[^A-Za-z0-9\s]+", "", data).lower().split():
+            if token in stop_words:
+                continue
+
+            yield self._stemmer.stemWord(token)
 
     def _tokenize_group(self, doc):
         tokens = defaultdict(list)
@@ -70,7 +79,6 @@ index = Index()
 for d in data:
     index.add(d)
 
-results = index.search("never told")
-print(results)
 
-# print(index._index)
+for r in index.search("I am your father"):
+    print(r)
