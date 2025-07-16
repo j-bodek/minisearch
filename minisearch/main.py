@@ -2,6 +2,7 @@ import re
 import uuid
 import Stemmer
 from stop import stop_words
+from Levenshtein import distance
 from collections import defaultdict
 
 
@@ -32,6 +33,14 @@ class Index:
             tokens[token].append(i)
 
         return tokens.items()
+    
+    def _get_tokens(self, token: str, fuzzyness: int):
+        if fuzzyness == 0:
+            yield token
+        else:
+            for t in self._index.keys():
+                if distance(t, token) <= fuzzyness:
+                    yield t
 
     def add(self, doc: str):
         doc_id = str(uuid.uuid4())
@@ -42,34 +51,36 @@ class Index:
 
         return doc_id
 
-    def search(self, query: str, slop: int = 0):
+    def search(self, query: str, slop: int = 0, fuzzyness: int = 0):
         results = []
 
         docs = {}
 
         for i, token in enumerate(self._tokenize(query)):
-            if token not in self._index or (i != 0 and not docs):
+            tokens = list(self._get_tokens(token, fuzzyness))
+            if not tokens or (i != 0 and not docs):
                 return results
 
             new_docs = {}
-            for doc_id, group in self._index[token]:
-                if i != 0 and doc_id not in docs:
-                    continue
+            for t in tokens:
+                for doc_id, group in self._index[t]:
+                    if i != 0 and doc_id not in docs:
+                        continue
 
-                if i == 0:
-                    indexes = list(group[1])
-                else:
-                    indexes = []
+                    if i == 0:
+                        indexes = list(group[1])
+                    else:
+                        indexes = []
 
-                    for index in group[1]:
-                        for s in range(1, slop+2):
-                            if index - s in docs[doc_id]:
-                                indexes.append(index)
+                        for index in group[1]:
+                            for s in range(1, slop+2):
+                                if index - s in docs[doc_id]:
+                                    indexes.append(index)
 
-                if indexes:
-                    new_docs[doc_id] = indexes
+                    if indexes:
+                        new_docs[doc_id] = indexes
 
-            docs = new_docs
+                docs = new_docs
 
         for doc_id in docs.keys():
             results.append(self._documents[doc_id])
@@ -83,5 +94,5 @@ for d in data:
     index.add(d)
 
 
-for r in index.search("Never told what happened", slop=1):
+for r in index.search("Never tald happened", slop=3, fuzzyness=1):
     print(r)
