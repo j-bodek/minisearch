@@ -73,7 +73,7 @@ class Index:
                         indexes = []
 
                         for index in group[1]:
-                            for s in range(1, slop+2):
+                            for s in range(-(slop-1), slop+2):
                                 if index - s in docs[doc_id]:
                                     indexes.append(index)
 
@@ -94,5 +94,5 @@ for d in data:
     index.add(d)
 
 
-for r in index.search("Never tald happened", slop=3, fuzzyness=1):
+for r in index.search("droids you are"):
     print(r)
