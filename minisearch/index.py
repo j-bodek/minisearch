@@ -1,43 +1,16 @@
 import math
-import re
 import uuid
-import Stemmer
-from stop import stop_words
 from Levenshtein import distance
+from .tokenize import Tokenizer
 from collections import defaultdict
-from rank_bm25 import BM25Okapi
-
-
-data = [
-    "These     are not the droids you are looking for.",
-    "Obi-Wan never told you what happened to your father.",
-    "No. I am your father.",
-    "ant bat cat dog elephant fish giraffe",
-]
 
 
 class Index:
     def __init__(self):
-        self._stemmer = Stemmer.Stemmer("english")
+        self._tokenizer = Tokenizer()
         self._avg_doc_len = 0
         self._index = defaultdict(list)
         self._documents = {}
-
-    def _tokenize(self, data: str):
-        for token in re.sub("[^A-Za-z0-9\s]+", "", data).lower().split():
-            if token in stop_words:
-                continue
-
-            yield self._stemmer.stemWord(token)
-
-    def _tokenize_group(self, doc):
-        tokens = defaultdict(list)
-
-        i = 0
-        for i, token in enumerate(self._tokenize(doc)):
-            tokens[token].append(i)
-
-        return i + 1, tokens.items()
 
     def _get_tokens(self, token: str, fuzzyness: int):
         if fuzzyness == 0:
@@ -81,7 +54,7 @@ class Index:
     def add(self, doc: str):
         doc_id = str(uuid.uuid4())
 
-        tokens_num, tokens_group = self._tokenize_group(doc)
+        tokens_num, tokens_group = self._tokenizer.tokenize_group(doc)
         for token, group in tokens_group:
             self._index[token].append((doc_id, [len(group), group]))
 
@@ -92,12 +65,10 @@ class Index:
 
         return doc_id
 
-    def search(self, query: str, slop: int = 0, fuzzyness: int = 0):
-        results = []
+    def search(self, query: str, slop: int = 0, fuzzyness: int = 0, score: bool = True):
+        results, docs = [], {}
 
-        docs = {}
-
-        for i, token in enumerate(self._tokenize(query)):
+        for i, token in enumerate(self._tokenizer.tokenize(query)):
             tokens = list(self._get_tokens(token, fuzzyness))
             if not tokens or (i != 0 and not docs):
                 return results
@@ -125,18 +96,13 @@ class Index:
 
         for doc_id, values in docs.items():
             doc = self._documents[doc_id]
-            results.append(
-                {"score": self._bm25(doc_id, values), "content": doc["content"]}
-            )
+            result = {"content": doc["content"]}
+            if score:
+                result["score"] = self._bm25(doc_id, values)
 
-        return sorted(results, key=lambda x: x["score"], reverse=True)
+            results.append(result)
 
-
-index = Index()
-
-for d in data:
-    index.add(d)
-
-
-for r in index.search("i am your father", slop=3):
-    print(r)
+        if score:
+            return sorted(results, key=lambda x: x["score"], reverse=True)
+        else:
+            return results
