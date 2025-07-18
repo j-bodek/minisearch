@@ -13,12 +13,12 @@ class Index:
         self._index = defaultdict(list)
         self._documents = {}
 
-    def _get_tokens(self, token: str, fuzzyness: int) -> Generator[str, None, None]:
-        if fuzzyness == 0:
+    def _get_tokens(self, token: str, fuzzy: int) -> Generator[str, None, None]:
+        if fuzzy == 0:
             yield token
         else:
             for t in self._index.keys():
-                if distance(t, token) <= fuzzyness:
+                if distance(t, token) <= fuzzy:
                     yield t
 
     def _flatten_docs_matches(self, tokens: list[list]):
@@ -87,14 +87,14 @@ class Index:
         return doc_id
 
     def search(
-        self, query: str, slop: int = 0, fuzzyness: int = 0, score: bool = True
+        self, query: str, slop: int = 0, fuzzy: int = 0, score: bool = True
     ) -> list[dict]:
 
         results: list[dict] = []
         docs: dict[str, list] = {}
 
         for i, token in enumerate(self._tokenizer.tokenize(query)):
-            tokens = list(self._get_tokens(token, fuzzyness))
+            tokens = list(self._get_tokens(token, fuzzy))
             if not tokens or (i != 0 and not docs):
                 return results
 
