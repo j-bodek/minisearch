@@ -4,7 +4,7 @@ from .index import Index
 class MiniSearch:
 
     def __init__(self):
-        self._indexes = {}
+        self._indexes: dict[str, Index] = {}
 
     def add(self, index: str) -> None:
         if index not in self._indexes:

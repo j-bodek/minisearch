@@ -1,5 +1,6 @@
 import math
 import uuid
+from typing import Generator
 from Levenshtein import distance
 from .tokenize import Tokenizer
 from collections import defaultdict
@@ -12,7 +13,7 @@ class Index:
         self._index = defaultdict(list)
         self._documents = {}
 
-    def _get_tokens(self, token: str, fuzzyness: int):
+    def _get_tokens(self, token: str, fuzzyness: int) -> Generator[str]:
         if fuzzyness == 0:
             yield token
         else:
@@ -27,8 +28,8 @@ class Index:
         k: float = 1.5,
         b: float = 0.75,
         eps: float = 0.5,
-    ):
-        score = 0
+    ) -> float:
+        score = 0.0
 
         for token in tokens:
             t, tf, _ = token
@@ -51,7 +52,7 @@ class Index:
 
         return score
 
-    def add(self, doc: str):
+    def add(self, doc: str) -> str:
         doc_id = str(uuid.uuid4())
 
         tokens_num, tokens_group = self._tokenizer.tokenize_group(doc)
@@ -65,8 +66,12 @@ class Index:
 
         return doc_id
 
-    def search(self, query: str, slop: int = 0, fuzzyness: int = 0, score: bool = True):
-        results, docs = [], {}
+    def search(
+        self, query: str, slop: int = 0, fuzzyness: int = 0, score: bool = True
+    ) -> list[dict]:
+
+        results: list[dict] = []
+        docs: dict[str, list] = {}
 
         for i, token in enumerate(self._tokenizer.tokenize(query)):
             tokens = list(self._get_tokens(token, fuzzyness))
