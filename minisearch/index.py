@@ -13,13 +13,23 @@ class Index:
         self._index = defaultdict(list)
         self._documents = {}
 
-    def _get_tokens(self, token: str, fuzzyness: int) -> Generator[str]:
+    def _get_tokens(self, token: str, fuzzyness: int) -> Generator[str, None, None]:
         if fuzzyness == 0:
             yield token
         else:
             for t in self._index.keys():
                 if distance(t, token) <= fuzzyness:
                     yield t
+
+    def _flatten_docs_matches(self, tokens: list[list]):
+
+        for t in tokens:
+            flatten_token = []
+            while t:
+                flatten_token.append([t[0], t[1], t[2], t[3]])
+                t = t[4]
+
+            yield flatten_token
 
     def _bm25(
         self,
@@ -31,24 +41,34 @@ class Index:
     ) -> float:
         score = 0.0
 
-        for token in tokens:
-            t, tf, _ = token
-            idf = math.log(
-                (
-                    (len(self._documents) - len(self._index[t]) + eps)
-                    / (len(self._index[t]) + eps)
-                )
-                + 1
-            )
+        for flatten_tokens in self._flatten_docs_matches(tokens):
 
-            score += idf * (
-                (tf * (k + 1))
-                / (
-                    tf
-                    + k
-                    * (1 - b + b * (self._documents[doc_id]["len"] / self._avg_doc_len))
+            cur_score = 0.0
+
+            for token in flatten_tokens:
+                t, tf, _, _ = token
+                idf = math.log(
+                    (
+                        (len(self._documents) - len(self._index[t]) + eps)
+                        / (len(self._index[t]) + eps)
+                    )
+                    + 1
                 )
-            )
+
+                score += idf * (
+                    (tf * (k + 1))
+                    / (
+                        tf
+                        + k
+                        * (
+                            1
+                            - b
+                            + b * (self._documents[doc_id]["len"] / self._avg_doc_len)
+                        )
+                    )
+                )
+
+            score = max(score, cur_score)
 
         return score
 
@@ -78,26 +98,39 @@ class Index:
             if not tokens or (i != 0 and not docs):
                 return results
 
-            new_docs = {}
+            new_docs = defaultdict(list)
             for t in tokens:
                 for doc_id, group in self._index[t]:
                     if i != 0 and doc_id not in docs:
                         continue
 
                     if i == 0:
-                        indexes = [t, group[0], group[1]]
+                        indexes = [[t, 0, group[0], group[1], None]]
                     else:
-                        indexes = [t, group[0], []]
+                        indexes = []
 
-                        for index in group[1]:
-                            for s in range(-(slop - 1), slop + 2):
-                                if index - s in docs[doc_id][-1][2]:
-                                    indexes[2].append(index)
+                        for prev_token in docs[doc_id]:
+                            for index in group[1]:
+                                for s in range(0, (slop - prev_token[1]) + 1):
+                                    if (
+                                        index - s - 1 in prev_token[3]
+                                        or index + s - 1 in prev_token[3]
+                                    ):
+                                        indexes.append(
+                                            [
+                                                t,
+                                                prev_token[1] + s,
+                                                group[0],
+                                                group[1],
+                                                prev_token,
+                                            ]
+                                        )
+                                        break
 
-                    if indexes[2]:
-                        new_docs[doc_id] = [*docs.get(doc_id, []), indexes]
+                    if indexes:
+                        new_docs[doc_id].extend(indexes)
 
-                docs = new_docs
+            docs = new_docs
 
         for doc_id, values in docs.items():
             doc = self._documents[doc_id]

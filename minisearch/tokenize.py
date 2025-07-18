@@ -47,7 +47,7 @@ class Tokenizer:
     def __init__(self):
         self._stemmer = snowballstemmer.stemmer("english")
 
-    def tokenize(self, doc: str) -> Generator[str]:
+    def tokenize(self, doc: str) -> Generator[str, None, None]:
         for token in re.sub("[^A-Za-z0-9\s]+", "", doc).lower().split():
             if token in self.__class__.STOP_WORDS:
                 continue
