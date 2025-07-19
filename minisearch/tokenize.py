@@ -1,5 +1,5 @@
 import re
-import snowballstemmer
+from .stemmer import SnowballStemmer
 from typing import Generator, ItemsView
 from collections import defaultdict
 
@@ -45,14 +45,15 @@ class Tokenizer:
     }
 
     def __init__(self):
-        self._stemmer = snowballstemmer.stemmer("english")
+        self._stemmer = SnowballStemmer()
 
     def tokenize(self, doc: str) -> Generator[str, None, None]:
         for token in re.sub("[^A-Za-z0-9\s]+", "", doc).lower().split():
             if token in self.__class__.STOP_WORDS:
                 continue
 
-            yield self._stemmer.stemWord(token)
+            yield self._stemmer.stem(token)
+            # yield self._stemmer.stemWord(token)
 
     def tokenize_group(self, doc: str) -> tuple[int, ItemsView[str, list[int]]]:
         tokens = defaultdict(list)
