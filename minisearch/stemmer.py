@@ -1,4 +1,5 @@
 import re
+from functools import lru_cache
 
 
 class SnowballStemmer:
@@ -11,22 +12,12 @@ class SnowballStemmer:
     output file - https://github.com/snowballstem/snowball-data/blob/c87231db9e26e7fbc524b7000d720fc882a5dc80/english/output.txt
     """
 
-    vowels = ["a", "e", "i", "o", "u", "y"]
-    doubles = ["bb", "dd", "ff", "gg", "mm", "nn", "pp", "rr", "tt"]
-    li_endings = ["c", "d", "e", "g", "h", "k", "m", "n", "r", "t"]
-    exceptions = ["sky", "news", "howe", "atlas", "cosmos", "bias", "andes"]
-    r1_beginings = [
-        "gener",
-        "commun",
-        "arsen",
-        "past",
-        "univers",
-        "later",
-        "emerg",
-        "organ",
-    ]
+    VOWELS = ("a", "e", "i", "o", "u", "y")
+    DOUBLES = ("bb", "dd", "ff", "gg", "mm", "nn", "pp", "rr", "tt")
+    LI_ENDINGS = ("c", "d", "e", "g", "h", "k", "m", "n", "r", "t")
+    EXCEPTION_WORDS = ("sky", "news", "howe", "atlas", "cosmos", "bias", "andes")
 
-    pre_stem_exceptions = {
+    PRE_STEM_EXCEPTIONS = {
         "skis": "ski",
         "skies": "sky",
         "idly": "idl",
@@ -40,24 +31,75 @@ class SnowballStemmer:
         "howe": "howe",
     }
 
+    R1_BEGININGS_REGEX = r"^(gener|commun|arsen|past|univers|later|emerg|organ)"
+
+    STEP_1A_SUFFIX_REGEX = r"(sses|ied|ies|us|ss|s)$"
+
+    STEP_2_SUFFIX_MAP = {
+        "ization": "ize",
+        "ational": "ate",
+        "fulness": "ful",
+        "ousness": "ous",
+        "iveness": "ive",
+        "tional": "tion",
+        "biliti": "ble",
+        "lessli": "less",
+        "entli": "ent",
+        "ation": "ate",
+        "alism": "al",
+        "aliti": "al",
+        "ousli": "ous",
+        "iviti": "ive",
+        "ogist": "og",
+        "fulli": "ful",
+        "enci": "ence",
+        "anci": "ance",
+        "abli": "able",
+        "izer": "ize",
+        "ator": "ate",
+        "alli": "al",
+        "bli": "ble",
+        "ogi": "og",
+        "li": "",
+    }
+
+    STEP_2_SUFFIX_REGEX = r"(ization|ational|fulness|ousness|iveness|tional|biliti|lessli|entli|ation|alism|aliti|ousli|iviti|ogist|fulli|enci|anci|abli|izer|ator|alli|bli|ogi|li)$"
+
+    STEP_3_SUFFIX_MAP = {
+        "ational": "ate",
+        "tional": "tion",
+        "alize": "al",
+        "icate": "ic",
+        "iciti": "ic",
+        "ative": "",
+        "ical": "ic",
+        "ness": "",
+        "ful": "",
+    }
+
+    STEP_3_SUFFIX_REGEX = r"(ational|tional|alize|icate|iciti|ative|ical|ness|ful)$"
+
+    STEP_4_SUFFIX_REGEX = r"(ement|ance|ence|able|ible|ment|ant|ent|ism|ate|iti|ous|ive|ize|ion|al|er|ic)$"
+
     def __init__(self):
         self._r1 = float("inf")
         self._r2 = float("inf")
 
+    @lru_cache(maxsize=1024)
     def stem(self, word):
         """
         Stem the word if it has more than two characters,
         otherwise return it as is.
         """
 
-        if len(word) <= 2 or word in self.__class__.exceptions:
+        if len(word) <= 2 or word in self.__class__.EXCEPTION_WORDS:
             return word
 
         self._r1, self._r2 = len(word), len(word)
 
         word = self.remove_initial_apostrophe(word)
-        if word in self.__class__.pre_stem_exceptions:
-            return self.__class__.pre_stem_exceptions[word]
+        if word in self.__class__.PRE_STEM_EXCEPTIONS:
+            return self.__class__.PRE_STEM_EXCEPTIONS[word]
 
         word = self.set_ys(word)
         self.find_r1r2(word)
@@ -76,24 +118,18 @@ class SnowballStemmer:
 
     def find_r1r2(self, word):
         length = len(word)
+        self._r1, self._r2 = length, length
 
-        self._r1, self._r2 = len(word), len(word)
+        if prefix := re.findall(self.__class__.R1_BEGININGS_REGEX, word):
+            self._r1 = len(prefix[0])
 
-        found = False
-        for prefix in self.__class__.r1_beginings:
-            if word.startswith(prefix):
-                self._r1 = len(prefix)
-
-                for index, match in enumerate(
-                    re.finditer("[aeiouy][^aeiouy]", word[len(prefix) :])
-                ):
-                    self._r2 = len(prefix) + match.end()
-                    break
-
-                found = True
+            for index, match in enumerate(
+                re.finditer("[aeiouy][^aeiouy]", word[self._r1 :])
+            ):
+                self._r2 = self._r1 + match.end()
                 break
 
-        if not found:
+        else:
             for index, match in enumerate(re.finditer("[aeiouy][^aeiouy]", word)):
                 if index == 0:
                     if match.end() < length:
@@ -102,9 +138,6 @@ class SnowballStemmer:
                     if match.end() < length:
                         self._r2 = match.end()
                     break
-
-        self._r1 = min(self._r1, length)
-        self._r2 = min(self._r2, length)
 
     def remove_initial_apostrophe(self, word):
         if word[0] == "'":
@@ -158,31 +191,32 @@ class SnowballStemmer:
             return word
 
     def step_1a(self, word):
-        if word.endswith("sses"):
-            return word[:-2]
-        elif word.endswith("ied") or word.endswith("ies"):
-            word = word[:-3]
-            # small mistake here, if 0 none will be done
-            if len(word) > 1:
-                word += "i"
-            else:
-                word += "ie"
-            return word
-        elif word.endswith("us") or word.endswith("ss"):
-            return word
-        elif word.endswith("s"):
-            for letter in word[:-2]:
-                if letter in self.__class__.vowels:
+        if suffix := re.findall(self.__class__.STEP_1A_SUFFIX_REGEX, word):
+            suffix = suffix[0]
+
+            if suffix == "sses":
+                return word[:-2]
+            elif suffix in ("ied", "ies"):
+                word = word[:-3]
+
+                if len(word) > 1:
+                    word += "i"
+                else:
+                    word += "ie"
+                return word
+            elif suffix in ("us", "ss"):
+                return word
+            elif suffix == "s":
+                if re.search(r"[aeiouy]+", word[:-2]):
                     return word[:-1]
 
         return word
 
     def step_1b(self, word):
-        for suffix in ["eedly", "eed"]:
-            if not word.endswith(suffix):
-                continue
 
-            # mistake here, only checked if r1 existed
+        if suffix := re.findall(r"(eedly|eed)$", word):
+            suffix = suffix[0]
+
             if len(word) - len(suffix) >= self._r1 and not any(
                 (word.startswith(s) for s in ("proc", "exc", "succ"))
             ):
@@ -190,106 +224,59 @@ class SnowballStemmer:
 
             return word
 
-        for suffix in ["ed", "edly", "ing", "ingly"]:
-            if not word.endswith(suffix):
-                continue
+        elif suffix := re.findall(r"(ingly|edly|ing|ed)$", word):
+            suffix = suffix[0]
 
             # special case for 'ing'
             if suffix == "ing":
                 if re.match("^[^aeiouy]y$", word[:-3]):
                     return word[:-4] + "ie"
-                elif word[:-3] in ["inn", "out", "cann", "herr", "earr", "even"]:
+                elif word[:-3] in ("inn", "out", "cann", "herr", "earr", "even"):
                     return word
 
-            has_vowel = False
-            for l in word[: -len(suffix)]:
-                if l in self.__class__.vowels:
-                    has_vowel = True
-                    break
-
-            if has_vowel:
+            if re.search(r"[aeiouy]+", word[: -len(suffix)]):
                 # delete suffix
                 word = word[: -len(suffix)]
 
-                if word[-2:] in ["at", "bl", "iz"]:
-                    word += "e"
-                elif word[-2:] in self.__class__.doubles and not (
-                    # lack of this condition
-                    len(word) == 3
-                    and word[0] in ["a", "e", "o"]
+                if word[-2:] in ("at", "bl", "iz"):
+                    return word + "e"
+                elif word[-2:] in self.__class__.DOUBLES and not (
+                    len(word) == 3 and word[0] in ("a", "e", "o")
                 ):
-                    word = word[:-1]
+                    return word[:-1]
                 elif self.is_short(word):
-                    word += "e"
-
-            break
+                    return word + "e"
 
         return word
 
     def step_1c(self, word):
-        if len(word) > 2 and word[-1] in "yY" and word[-2] not in self.__class__.vowels:
+        if len(word) > 2 and word[-1] in "yY" and word[-2] not in self.__class__.VOWELS:
             return word[:-1] + "i"
 
         return word
 
     def step_2(self, word):
-        suffixes = (
-            ("ization", "ize"),
-            ("ational", "ate"),
-            ("fulness", "ful"),
-            ("ousness", "ous"),
-            ("iveness", "ive"),
-            ("tional", "tion"),
-            ("biliti", "ble"),
-            ("lessli", "less"),
-            ("entli", "ent"),
-            ("ation", "ate"),
-            ("alism", "al"),
-            ("aliti", "al"),
-            ("ousli", "ous"),
-            ("iviti", "ive"),
-            ("ogist", "og"),
-            ("fulli", "ful"),
-            ("enci", "ence"),
-            ("anci", "ance"),
-            ("abli", "able"),
-            ("izer", "ize"),
-            ("ator", "ate"),
-            ("alli", "al"),
-            ("bli", "ble"),
-            ("ogi", "og"),
-            ("li", ""),
-        )
 
-        for suffix, repl in suffixes:
-            if word.endswith(suffix):
+        if suffix := re.findall(self.__class__.STEP_2_SUFFIX_REGEX, word):
+            suffix, repl = suffix[0], self.__class__.STEP_2_SUFFIX_MAP[suffix[0]]
 
-                if not (len(word) - len(suffix) >= self._r1):
-                    return word
+            if not (len(word) - len(suffix) >= self._r1):
+                return word
 
-                if suffix == "ogi" and word[-4] == "l":
-                    return word[: -len(suffix)] + repl
-                elif suffix == "li" and word[-3] in self.__class__.li_endings:
-                    return word[: -len(suffix)]
-                elif suffix not in ["ogi", "li"]:
-                    return word[: -len(suffix)] + repl
+            if suffix == "ogi" and word[-4] == "l":
+                return word[: -len(suffix)] + repl
+            elif suffix == "li" and word[-3] in self.__class__.LI_ENDINGS:
+                return word[: -len(suffix)]
+            elif suffix not in ["ogi", "li"]:
+                return word[: -len(suffix)] + repl
 
         return word
 
     def step_3(self, word):
-        suffixes = (
-            ("ational", "ate"),
-            ("tional", "tion"),
-            ("alize", "al"),
-            ("icate", "ic"),
-            ("iciti", "ic"),
-            ("ative", ""),
-            ("ical", "ic"),
-            ("ness", ""),
-            ("ful", ""),
-        )
 
-        for suffix, repl in suffixes:
+        if suffix := re.findall(self.__class__.STEP_3_SUFFIX_REGEX, word):
+            suffix, repl = suffix[0], self.__class__.STEP_3_SUFFIX_MAP[suffix[0]]
+
             if word.endswith(suffix):
 
                 if not (len(word) - len(suffix) >= self._r1):
@@ -303,38 +290,17 @@ class SnowballStemmer:
         return word
 
     def step_4(self, word):
-        suffixes = (
-            "ement",
-            "ance",
-            "ence",
-            "able",
-            "ible",
-            "ment",
-            "ant",
-            "ent",
-            "ism",
-            "ate",
-            "iti",
-            "ous",
-            "ive",
-            "ize",
-            "ion",
-            "al",
-            "er",
-            "ic",
-        )
+        if suffix := re.findall(self.__class__.STEP_4_SUFFIX_REGEX, word):
+            suffix = suffix[0]
 
-        for suffix in suffixes:
-            if word.endswith(suffix):
+            # r2 in suffix
+            if not (len(word) - len(suffix) >= self._r2):
+                return word
 
-                # r2 in suffix
-                if not (len(word) - len(suffix) >= self._r2):
-                    return word
-
-                if suffix == "ion" and word[-4] in "st":
-                    return word[: -len(suffix)]
-                elif suffix != "ion":
-                    return word[: -len(suffix)]
+            if suffix == "ion" and word[-4] in "st":
+                return word[: -len(suffix)]
+            elif suffix != "ion":
+                return word[: -len(suffix)]
 
         return word
 

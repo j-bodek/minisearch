@@ -1,4 +1,5 @@
 import re
+
 from .stemmer import SnowballStemmer
 from typing import Generator, ItemsView
 from collections import defaultdict
@@ -53,7 +54,6 @@ class Tokenizer:
                 continue
 
             yield self._stemmer.stem(token)
-            # yield self._stemmer.stemWord(token)
 
     def tokenize_group(self, doc: str) -> tuple[int, ItemsView[str, list[int]]]:
         tokens = defaultdict(list)
