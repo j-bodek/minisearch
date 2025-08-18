@@ -88,9 +88,6 @@ impl SnowballStemmer {
             return word;
         }
 
-        self.r1 = word.len();
-        self.r2 = word.len();
-
         self.remove_initial_apostrophe(&mut word);
         match self.pre_stem_exceptions.get(&word) {
             Some(word) => return word.to_string(),
@@ -98,6 +95,7 @@ impl SnowballStemmer {
         }
 
         self.set_ys(&mut word);
+        self.find_r1r2(&mut word);
 
         return word;
     }
@@ -124,6 +122,49 @@ impl SnowballStemmer {
 
         for m in matches {
             word.replace_range(m - 1..m, "Y");
+        }
+    }
+
+    fn find_r1r2(&mut self, word: &mut String) {
+        self.r1 = word.len();
+        self.r2 = word.len();
+
+        let prefix = Regex::new(r"^(gener|commun|arsen|past|univers|later|emerg|organ)")
+            .unwrap()
+            .find(word);
+
+        match prefix {
+            Some(prefix) => {
+                let prefix = prefix.as_str();
+                self.r1 = prefix.len();
+
+                let matches: Vec<usize> = Regex::new(r"[aeiouy][^aeiouy]")
+                    .unwrap()
+                    .find_iter(&word[self.r1..])
+                    .map(|m| m.end())
+                    .collect();
+
+                for m in matches {
+                    self.r2 = self.r1 + m - 1;
+                    break;
+                }
+            }
+            None => {
+                let matches: Vec<usize> = Regex::new(r"[aeiouy][^aeiouy]")
+                    .unwrap()
+                    .find_iter(word)
+                    .map(|m| m.end())
+                    .collect();
+
+                for (index, &m) in matches.iter().enumerate() {
+                    if index == 0 {
+                        self.r1 = m - 1;
+                    } else if index == 1 {
+                        self.r2 = m - 1;
+                        break;
+                    }
+                }
+            }
         }
     }
 }
