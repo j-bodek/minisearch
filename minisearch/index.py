@@ -1,17 +1,33 @@
 import math
 import uuid
+from dataclasses import dataclass
 from typing import Generator
 from Levenshtein import distance
 from .tokenize import Tokenizer
 from collections import defaultdict
+from line_profiler import profile
+
+
+@dataclass(slots=True)
+class DocTokens:
+    id: str
+    num: int
+    indexes: list[int]
+
+    def __eq__(self, v):
+        return self.id == v
+
+    def __hash__(self) -> str:
+        return self.id.__hash__()
 
 
 class Index:
     def __init__(self):
         self._tokenizer = Tokenizer()
         self._avg_doc_len = 0
-        self._index = defaultdict(list)
+        self._index = defaultdict(set)
         self._documents = {}
+        self._fuzzy_cache = {}
 
     def _get_tokens(self, token: str, fuzzy: int) -> Generator[str, None, None]:
         if fuzzy == 0:
@@ -77,7 +93,8 @@ class Index:
 
         tokens_num, tokens_group = self._tokenizer.tokenize_group(doc)
         for token, group in tokens_group:
-            self._index[token].append((doc_id, [len(group), group]))
+            # self._index[token].append((doc_id, [len(group), group]))
+            self._index[token].add(DocTokens(id=doc_id, num=len(group), indexes=group))
 
         self._avg_doc_len = (self._avg_doc_len * len(self._documents) + tokens_num) / (
             len(self._documents) + 1
@@ -86,61 +103,87 @@ class Index:
 
         return doc_id
 
+    def cache_fuzzy(self, query, fuzzy):
+        tokens = list(self._tokenizer.tokenize(query))
+
+        for token in tokens:
+            self._fuzzy_cache[token] = list(self._get_tokens(token, fuzzy))
+
+    @profile
     def search(
         self, query: str, slop: int = 0, fuzzy: int = 0, score: bool = True
     ) -> list[dict]:
 
         results: list[dict] = []
-        docs: dict[str, list] = {}
+        docs: dict[str, set] = {}
 
-        for i, token in enumerate(self._tokenizer.tokenize(query)):
-            tokens = list(self._get_tokens(token, fuzzy))
-            if not tokens or (i != 0 and not docs):
+        tokens = list(self._tokenizer.tokenize(query))
+        tokens_map = {}
+        docs_set = None
+
+        # for token in tokens:
+        #     # if not (sim_tokens := list(self._get_tokens(token, fuzzy))):
+        #     if not (sim_tokens := self._fuzzy_cache[token]):
+        #         return results
+
+        #     cur_docs_set = set()
+        #     for t in sim_tokens:
+        #         cur_docs_set = cur_docs_set.union(self._index[t])
+
+        #     if docs_set is None:
+        #         docs_set = cur_docs_set
+        #     else:
+        #         docs_set = docs_set.intersection(cur_docs_set)
+
+        #     if not docs_set:
+        #         return results
+
+        #     if not docs_set:
+        #         return results
+
+        #     tokens_map[token] = sim_tokens
+
+        for i, token in enumerate(tokens):
+            if i != 0 and not docs:
                 return results
 
-            new_docs = defaultdict(list)
-            for t in tokens:
-                for doc_id, group in self._index[t]:
-                    if i != 0 and doc_id not in docs:
+            # sim_tokens = tokens_map[token]
+            if not (sim_tokens := self._fuzzy_cache[token]):
+                return results
+
+            new_docs = defaultdict(set)
+
+            for t in sim_tokens:
+                for doc_tokens in self._index[t]:
+                    # if doc_tokens not in docs_set:
+                    #     continue
+
+                    if i != 0 and doc_tokens.id not in docs:
                         continue
 
                     if i == 0:
-                        indexes = [[t, 0, group[0], group[1], None]]
+                        new_docs[doc_tokens.id].union(doc_tokens.indexes)
                     else:
-                        indexes = []
-
-                        for prev_token in docs[doc_id]:
-                            for index in group[1]:
-                                for s in range(0, (slop - prev_token[1]) + 1):
-                                    if (
-                                        index - s - 1 in prev_token[3]
-                                        or index + s - 1 in prev_token[3]
-                                    ):
-                                        indexes.append(
-                                            [
-                                                t,
-                                                prev_token[1] + s,
-                                                group[0],
-                                                group[1],
-                                                prev_token,
-                                            ]
-                                        )
-                                        break
-
-                    if indexes:
-                        new_docs[doc_id].extend(indexes)
+                        for index in doc_tokens.indexes:
+                            if index - 1 in docs[doc_tokens.id]:
+                                # for s in range(0, slop + 1):
+                                #     if (
+                                #         index - s - 1 in docs[doc_tokens.id]
+                                #         or index + s - 1 in docs[doc_tokens.id]
+                                #     ):
+                                new_docs[doc_tokens.id].add(index)
 
             docs = new_docs
 
         for doc_id, values in docs.items():
             doc = self._documents[doc_id]
             result = {"content": doc["content"]}
-            if score:
-                result["score"] = self._bm25(doc_id, values)
+            # if score:
+            #     result["score"] = self._bm25(doc_id, values)
 
             results.append(result)
 
-        if score:
-            return sorted(results, key=lambda x: x["score"], reverse=True)
-        else:
-            return results
+        # if score:
+        #     return sorted(results, key=lambda x: x["score"], reverse=True)
+        # else:
+        return results
