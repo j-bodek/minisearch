@@ -1,11 +1,30 @@
 use pyo3::prelude::*;
-use regex::Regex;
 use std::collections::HashMap;
 
-static VOWELS: [&str; 6] = ["a", "e", "i", "o", "u", "y"];
+static VOWELS: [char; 6] = ['a', 'e', 'i', 'o', 'u', 'y'];
 static DOUBLES: [&str; 9] = ["bb", "dd", "ff", "gg", "mm", "nn", "pp", "rr", "tt"];
-static LI_ENDINGS: [&str; 10] = ["c", "d", "e", "g", "h", "k", "m", "n", "r", "t"];
+static LI_ENDINGS: [char; 10] = ['c', 'd', 'e', 'g', 'h', 'k', 'm', 'n', 'r', 't'];
 static EXCEPTION_WORDS: [&str; 7] = ["sky", "news", "howe", "atlas", "cosmos", "bias", "andes"];
+static R1_BEGININGS: [&str; 8] = [
+    "gener", "commun", "arsen", "past", "univers", "later", "emerg", "organ",
+];
+
+static STEP_1A_SUFFIXES: [&str; 6] = ["sses", "ied", "ies", "us", "ss", "s"];
+static STEP_1B_SUFFIXES_1: [&str; 2] = ["eedly", "eed"];
+static STEP_1B_SUFFIXES_2: [&str; 4] = ["ingly", "edly", "ing", "ed"];
+static STEP_2_SUFFIXES: [&str; 25] = [
+    "ization", "ational", "fulness", "ousness", "iveness", "tional", "biliti", "lessli", "entli",
+    "ation", "alism", "aliti", "ousli", "iviti", "ogist", "fulli", "enci", "anci", "abli", "izer",
+    "ator", "alli", "bli", "ogi", "li",
+];
+
+static STEP_3_SUFFIXES: [&str; 9] = [
+    "ational", "tional", "alize", "icate", "iciti", "ative", "ical", "ness", "ful",
+];
+static STEP_4_SUFFIXES: [&str; 18] = [
+    "ement", "ance", "ence", "able", "ible", "ment", "ant", "ent", "ism", "ate", "iti", "ous",
+    "ive", "ize", "ion", "al", "er", "ic",
+];
 
 #[pyclass(name = "SnowballStemmer")]
 pub struct SnowballStemmer {
@@ -97,12 +116,48 @@ impl SnowballStemmer {
         self.set_ys(&mut word);
         self.find_r1r2(&mut word);
 
-        return word;
+        self.step_0(&mut word);
+        self.step_1a(&mut word);
+        self.step_1b(&mut word);
+        self.step_1c(&mut word);
+        self.step_2(&mut word);
+        self.step_3(&mut word);
+        self.step_4(&mut word);
+        self.step_5(&mut word);
+        word.replace("Y", "y")
     }
 }
 
 // impl not exposed to python
 impl SnowballStemmer {
+    fn ends_with_short_syllabe(&self, word: &str) -> bool {
+        if word == "past" {
+            return true;
+        } else if word.len() > 2
+            && !VOWELS.contains(&word.chars().nth(word.len() - 3).unwrap())
+            && VOWELS.contains(&word.chars().nth(word.len() - 2).unwrap())
+            && !['a', 'e', 'i', 'o', 'u', 'w', 'x', 'Y']
+                .contains(&word.chars().nth(word.len() - 1).unwrap())
+        {
+            return true;
+        } else if word.len() == 2
+            && VOWELS.contains(&word.chars().nth(0).unwrap())
+            && !VOWELS.contains(&word.chars().nth(1).unwrap())
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    fn is_short(&self, word: &String) -> bool {
+        if self.r1 >= word.len() {
+            return self.ends_with_short_syllabe(&word);
+        }
+
+        return false;
+    }
+
     fn remove_initial_apostrophe(&self, word: &mut String) {
         if word.starts_with("'") {
             let _ = &word.remove(0);
@@ -111,17 +166,22 @@ impl SnowballStemmer {
 
     fn set_ys(&self, word: &mut String) {
         if word.starts_with("y") {
-            let _ = word.replacen("y", "Y", 1);
+            word.replace_range(0..1, "Y");
         }
 
-        let matches: Vec<usize> = Regex::new(r"[aeiou]y")
-            .unwrap()
-            .find_iter(word)
-            .map(|m| m.end())
-            .collect();
+        let mut is_vowel = false;
+        let chars: Vec<char> = word.chars().collect();
 
-        for m in matches {
-            word.replace_range(m - 1..m, "Y");
+        for (i, c) in chars.into_iter().enumerate() {
+            if is_vowel && c == 'y' {
+                word.replace_range(i..i + 1, "Y");
+            }
+
+            if VOWELS.contains(&c) {
+                is_vowel = true;
+            } else {
+                is_vowel = false;
+            }
         }
     }
 
@@ -129,42 +189,242 @@ impl SnowballStemmer {
         self.r1 = word.len();
         self.r2 = word.len();
 
-        let prefix = Regex::new(r"^(gener|commun|arsen|past|univers|later|emerg|organ)")
-            .unwrap()
-            .find(word);
+        for prefix in R1_BEGININGS.iter() {
+            if !word.starts_with(prefix) {
+                continue;
+            }
 
-        match prefix {
-            Some(prefix) => {
-                let prefix = prefix.as_str();
-                self.r1 = prefix.len();
+            self.r1 = prefix.len();
 
-                let matches: Vec<usize> = Regex::new(r"[aeiouy][^aeiouy]")
-                    .unwrap()
-                    .find_iter(&word[self.r1..])
-                    .map(|m| m.end())
-                    .collect();
+            let chars: &Vec<char> = &word[self.r1..].chars().collect();
+            let mut is_vowel = false;
 
-                for m in matches {
-                    self.r2 = self.r1 + m - 1;
-                    break;
+            for (i, c) in chars.into_iter().enumerate() {
+                if VOWELS.contains(&c) {
+                    is_vowel = true;
+                } else {
+                    if is_vowel {
+                        self.r2 = self.r1 + i + 1;
+                        break;
+                    }
+
+                    is_vowel = false;
                 }
             }
-            None => {
-                let matches: Vec<usize> = Regex::new(r"[aeiouy][^aeiouy]")
-                    .unwrap()
-                    .find_iter(word)
-                    .map(|m| m.end())
-                    .collect();
 
-                for (index, &m) in matches.iter().enumerate() {
-                    if index == 0 {
-                        self.r1 = m - 1;
-                    } else if index == 1 {
-                        self.r2 = m - 1;
+            return;
+        }
+
+        let chars: Vec<char> = word.chars().collect();
+        let mut is_vowel = false;
+        let mut matches = 0;
+
+        for (i, c) in chars.into_iter().enumerate() {
+            if VOWELS.contains(&c) {
+                is_vowel = true;
+            } else {
+                if is_vowel && matches == 0 {
+                    matches += 1;
+                    self.r1 = i + 1;
+                } else if is_vowel && matches == 1 {
+                    self.r2 = i + 1;
+                    break;
+                }
+
+                is_vowel = false;
+            }
+        }
+    }
+
+    fn step_0(&self, word: &mut String) {
+        if word.ends_with("'s'") {
+            word.truncate(word.len() - 3);
+        } else if word.ends_with("'s") {
+            word.truncate(word.len() - 2);
+        } else if word.ends_with("'") {
+            word.truncate(word.len() - 1);
+        }
+    }
+
+    fn step_1a(&self, word: &mut String) {
+        for suffix in STEP_1A_SUFFIXES.iter() {
+            if !word.ends_with(suffix) {
+                continue;
+            }
+
+            if *suffix == "sses" {
+                word.truncate(word.len() - 2);
+            } else if ["ied", "ies"].contains(&suffix) {
+                word.truncate(word.len() - 3);
+
+                if word.len() > 1 {
+                    word.insert_str(word.len(), "i");
+                } else {
+                    word.insert_str(word.len(), "ie");
+                }
+            } else if *suffix == "s" && word.len() > 2 {
+                let chars: &Vec<char> = &word[..word.len() - 2].chars().collect();
+                for c in chars.into_iter() {
+                    if VOWELS.contains(&c) {
+                        word.truncate(word.len() - 1);
                         break;
                     }
                 }
             }
+
+            break;
+        }
+    }
+
+    fn step_1b(&self, word: &mut String) {
+        for suffix in STEP_1B_SUFFIXES_1.iter() {
+            if !word.ends_with(suffix) {
+                continue;
+            }
+
+            if word.len() - suffix.len() >= self.r1
+                && !["proc", "exc", "succ"].iter().any(|p| word.starts_with(p))
+            {
+                word.replace_range(word.len() - suffix.len().., "ee");
+            }
+
+            return;
+        }
+
+        for suffix in STEP_1B_SUFFIXES_2.iter() {
+            if !word.ends_with(suffix) {
+                continue;
+            }
+
+            // special case for 'ing'
+            if *suffix == "ing" {
+                if word.len() == 5
+                    && word.chars().nth(word.len() - 4).unwrap() == 'y'
+                    && !VOWELS.contains(&word.chars().nth(word.len() - 5).unwrap())
+                {
+                    word.replace_range(word.len() - 4.., "ie");
+                    return;
+                } else if ["inn", "out", "cann", "herr", "earr", "even"]
+                    .contains(&&word[..word.len() - 3])
+                {
+                    return;
+                }
+            }
+
+            if word[..word.len() - suffix.len()]
+                .chars()
+                .into_iter()
+                .any(|c| VOWELS.contains(&c))
+            {
+                // delete suffix
+                word.truncate(word.len() - suffix.len());
+
+                if ["at", "bl", "iz"].iter().any(|s| word.ends_with(s)) {
+                    word.insert(word.len(), 'e');
+                } else if DOUBLES.iter().any(|s| word.ends_with(s))
+                    && !(word.len() == 3 && ['a', 'e', 'o'].contains(&word.chars().nth(0).unwrap()))
+                {
+                    word.truncate(word.len() - 1);
+                } else if self.is_short(&word) {
+                    word.insert(word.len(), 'e');
+                }
+            }
+
+            break;
+        }
+    }
+
+    fn step_1c(&self, word: &mut String) {
+        if word.len() > 2
+            && ['y', 'Y'].contains(&word.chars().nth(word.len() - 1).unwrap())
+            && !VOWELS.contains(&word.chars().nth(word.len() - 2).unwrap())
+        {
+            word.replace_range(word.len() - 1.., "i");
+        }
+    }
+
+    fn step_2(&self, word: &mut String) {
+        for suffix in STEP_2_SUFFIXES.iter() {
+            if !word.ends_with(suffix) {
+                continue;
+            }
+
+            if !(word.len() - suffix.len() >= self.r1) {
+                return;
+            }
+
+            let repl = self.step_2_suffix_map.get(*suffix).unwrap();
+            if word.len() >= 4
+                && *suffix == "ogi"
+                && word.chars().nth(word.len() - 4).unwrap() == 'l'
+            {
+                word.replace_range(word.len() - suffix.len().., repl);
+            } else if word.len() >= 3
+                && *suffix == "li"
+                && LI_ENDINGS.contains(&word.chars().nth(word.len() - 3).unwrap())
+            {
+                word.replace_range(word.len() - suffix.len().., repl);
+            } else if !["ogi", "li"].contains(suffix) {
+                word.replace_range(word.len() - suffix.len().., repl);
+            }
+
+            break;
+        }
+    }
+
+    fn step_3(&self, word: &mut String) {
+        for suffix in STEP_3_SUFFIXES.iter() {
+            if !word.ends_with(suffix) {
+                continue;
+            }
+
+            if !(word.len() - suffix.len() >= self.r1) {
+                return;
+            }
+
+            let repl = self.step_3_suffix_map.get(*suffix).unwrap();
+            if *suffix == "ative" && word.len() - suffix.len() >= self.r2 {
+                word.replace_range(word.len() - suffix.len().., repl);
+            } else if *suffix != "ative" {
+                word.replace_range(word.len() - suffix.len().., repl);
+            }
+
+            break;
+        }
+    }
+
+    fn step_4(&self, word: &mut String) {
+        for suffix in STEP_4_SUFFIXES.iter() {
+            if !word.ends_with(suffix) {
+                continue;
+            }
+
+            if !(word.len() - suffix.len() >= self.r2) {
+                return;
+            }
+
+            if word.len() > 3
+                && *suffix == "ion"
+                && ['s', 't'].contains(&word.chars().nth(word.len() - 4).unwrap())
+            {
+                word.truncate(word.len() - suffix.len());
+            } else if *suffix != "ion" {
+                word.truncate(word.len() - suffix.len());
+            }
+
+            break;
+        }
+    }
+
+    fn step_5(&self, word: &mut String) {
+        if word.ends_with("e")
+            && ((word.len() - 1 >= self.r2)
+                || (word.len() - 1 >= self.r1
+                    && !self.ends_with_short_syllabe(&word[..word.len() - 1])))
+        {
+            word.truncate(word.len() - 1);
+        } else if word.ends_with("ll") && word.len() - 1 >= self.r2 {
+            word.truncate(word.len() - 1);
         }
     }
 }
