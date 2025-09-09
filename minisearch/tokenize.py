@@ -1,6 +1,7 @@
 import re
 
-from .stemmer import SnowballStemmer
+# from .stemmer import SnowballStemmer
+from minisearch_rs import SnowballStemmer
 from typing import Generator, ItemsView
 from collections import defaultdict
 

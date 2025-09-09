@@ -11,38 +11,36 @@ struct Value<K, T> {
 
 #[derive(Debug)]
 struct Node<T> {
-    val: T,
+    val: Option<T>,
     prev: Option<Rc<RefCell<Node<T>>>>,
     next: Option<Weak<RefCell<Node<T>>>>,
 }
 
 #[derive(Debug)]
-struct List<T: Copy> {
+struct List<T> {
     size: u32,
     head: Option<Rc<RefCell<Node<T>>>>,
     tail: Option<Rc<RefCell<Node<T>>>>,
 }
 
 #[derive(Debug)]
-pub struct LRUCache<K: Eq + Hash + Copy, T: Copy> {
+pub struct LRUCache<K: Eq + Hash, T> {
     capacity: u32,
     map: HashMap<K, Rc<RefCell<Node<Value<K, T>>>>>,
     list: List<Value<K, T>>,
 }
 
-impl<K: Copy, T: Copy> Copy for Value<K, T> {}
-
 impl<T> Node<T> {
     fn new(val: T) -> Node<T> {
         Node {
-            val: val,
+            val: Some(val),
             prev: None,
             next: None,
         }
     }
 }
 
-impl<T: Copy> List<T> {
+impl<T> List<T> {
     fn new() -> List<T> {
         List {
             size: 0,
@@ -89,7 +87,7 @@ impl<T: Copy> List<T> {
                 };
 
                 self.size -= 1;
-                Some(tail.val)
+                Some(tail.val.take()?)
             }
             _ => None,
         }
@@ -140,7 +138,7 @@ impl<T: Copy> List<T> {
     }
 }
 
-impl<K: Eq + Hash + Copy, T: Copy> LRUCache<K, T> {
+impl<K: Eq + Hash + Clone, T: Clone> LRUCache<K, T> {
     pub fn new(capacity: u32) -> Self {
         Self {
             capacity: capacity,
@@ -157,12 +155,15 @@ impl<K: Eq + Hash + Copy, T: Copy> LRUCache<K, T> {
                     self.list.move_front(Rc::clone(node));
                     // update value
                     let mut node = node.borrow_mut();
-                    node.val.val = val;
+                    node.val.replace(Value { key: key, val: val });
                 }
                 None => (),
             }
         } else {
-            let node = self.list.push(Value { key: key, val: val });
+            let node = self.list.push(Value {
+                key: key.clone(),
+                val: val,
+            });
             self.map.insert(key, node);
         }
 
@@ -176,14 +177,14 @@ impl<K: Eq + Hash + Copy, T: Copy> LRUCache<K, T> {
         }
     }
 
-    pub fn get(&mut self, key: K) -> Option<T> {
-        match self.map.get(&key) {
+    pub fn get(&mut self, key: &K) -> Option<T> {
+        match self.map.get(key) {
             Some(node) => {
                 // move node to front
                 self.list.move_front(Rc::clone(node));
                 // return value
                 let node = node.borrow_mut();
-                Some(node.val.val)
+                Some(node.val.as_ref().unwrap().val.clone())
             }
             None => None,
         }
