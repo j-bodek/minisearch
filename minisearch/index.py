@@ -1,3 +1,5 @@
+import heapq
+import bisect
 import math
 import uuid
 from .tokenize import Tokenizer
@@ -71,7 +73,9 @@ class Index:
 
         tokens_num, tokens_group = self._tokenizer.tokenize_group(doc)
         for token, group in tokens_group:
-            self._index[token].append((doc_id, [len(group), group]))
+            bisect.insort(
+                self._index[token], (doc_id, [len(group), group]), key=lambda x: x[0]
+            )
             self._fuzzy_trie.add(token)
 
         self._avg_doc_len = (self._avg_doc_len * len(self._documents) + tokens_num) / (
@@ -81,60 +85,168 @@ class Index:
 
         return doc_id
 
+    # def search(
+    #     self, query: str, slop: int = 0, fuzzy: int = 0, score: bool = True
+    # ) -> list[dict]:
+
+    #     results: list[dict] = []
+    #     docs: dict[str, list] = {}
+
+    #     for i, token in enumerate(self._tokenizer.tokenize(query)):
+    #         tokens = self._fuzzy_trie.search(fuzzy, token)
+    #         if not tokens or (i != 0 and not docs):
+    #             return results
+
+    #         new_docs = defaultdict(list)
+    #         for t in tokens:
+    #             for doc_id, group in self._index[t]:
+    #                 if i != 0 and doc_id not in docs:
+    #                     continue
+
+    #                 if i == 0:
+    #                     indexes = [[t, 0, group[0], group[1], None]]
+    #                 else:
+    #                     indexes = []
+
+    #                     for prev_token in docs[doc_id]:
+    #                         for index in group[1]:
+    #                             for s in range(0, (slop - prev_token[1]) + 1):
+    #                                 if (
+    #                                     index - s - 1 in prev_token[3]
+    #                                     or index + s - 1 in prev_token[3]
+    #                                 ):
+    #                                     indexes.append(
+    #                                         [
+    #                                             t,
+    #                                             prev_token[1] + s,
+    #                                             group[0],
+    #                                             group[1],
+    #                                             prev_token,
+    #                                         ]
+    #                                     )
+
+    #                 if indexes:
+    #                     new_docs[doc_id].extend(indexes)
+
+    #         docs = new_docs
+
+    #     for doc_id, values in docs.items():
+    #         doc = self._documents[doc_id]
+    #         result = {"content": doc["content"]}
+    #         if score:
+    #             result["score"] = self._bm25(doc_id, values)
+
+    #         results.append(result)
+
+    #     if score:
+    #         return sorted(results, key=lambda x: x["score"], reverse=True)
+    #     else:
+    #         return results
+
+    def match(self, pointers, min_slop):
+        indexes = []
+        slop, token_indexes = 0, [0 for _ in pointers.keys()]
+
+        # init indexes
+        for i, v in pointers.items():
+            token, idx = v["token"], v["elem_idx"]
+            token_indexes[i] = self._index[token][idx][1][1][0]
+            heapq.heappush(indexes, (self._index[token][idx][1][1][0], 0, i))
+
+            if i > 0:
+                slop += abs(token_indexes[i - 1] - token_indexes[i])
+
+        while True:
+            # check if min slop is matched
+            if slop <= min_slop:
+                yield token_indexes
+
+            token_idx, idx, token_id = heapq.heappop(indexes)
+            token, elem_idx = (
+                pointers[token_id]["token"],
+                pointers[token_id]["elem_idx"],
+            )
+            if idx + 1 > len(self._index[token][elem_idx][1][1]) - 1:
+                break
+
+            token_idx = self._index[token][elem_idx][1][1][idx + 1]
+
+            # update slop
+            if token_id > 0:
+                # update next slop
+                slop -= abs(token_indexes[token_id - 1] - token_indexes[token_id])
+                slop += abs(token_indexes[token_id - 1] - token_idx)
+
+            if token_id < len(token_indexes) - 1:
+                # update previous slop
+                slop -= abs(token_indexes[token_id] - token_indexes[token_id + 1])
+                slop += abs(token_idx - token_indexes[token_id + 1])
+
+            token_indexes[token_id] = token_idx
+            heapq.heappush(
+                indexes,
+                (self._index[token][elem_idx][1][1][idx + 1], idx + 1, token_id),
+            )
+
     def search(
         self, query: str, slop: int = 0, fuzzy: int = 0, score: bool = True
     ) -> list[dict]:
 
-        results: list[dict] = []
-        docs: dict[str, list] = {}
+        results = []
+        ids, pointers, ids_map = [], {}, defaultdict(int)
+        tokens = self._tokenizer.tokenize(query)
 
-        for i, token in enumerate(self._tokenizer.tokenize(query)):
-            tokens = self._fuzzy_trie.search(fuzzy, token)
-            if not tokens or (i != 0 and not docs):
+        # init pointers
+        for i, t in enumerate(tokens):
+            if t not in self._index:
+                # token don't exists
                 return results
 
-            new_docs = defaultdict(list)
-            for t in tokens:
-                for doc_id, group in self._index[t]:
-                    if i != 0 and doc_id not in docs:
-                        continue
+            pointers[i] = {
+                "token": t,
+                "skip_len": math.floor(
+                    math.sqrt(len(self._index[t]))
+                ),  # to dynamically compute next skip pointer
+                "elem_idx": 0,
+            }
 
-                    if i == 0:
-                        indexes = [[t, 0, group[0], group[1], None]]
-                    else:
-                        indexes = []
+            heapq.heappush(ids, (self._index[t][0][0], i))
+            ids_map[self._index[t][0][0]] += 1
 
-                        for prev_token in docs[doc_id]:
-                            for index in group[1]:
-                                for s in range(0, (slop - prev_token[1]) + 1):
-                                    if (
-                                        index - s - 1 in prev_token[3]
-                                        or index + s - 1 in prev_token[3]
-                                    ):
-                                        indexes.append(
-                                            [
-                                                t,
-                                                prev_token[1] + s,
-                                                group[0],
-                                                group[1],
-                                                prev_token,
-                                            ]
-                                        )
+        while True:
+            if len(ids_map) == 1:
+                doc_id = ids[0][0]
+                for indexes in self.match(pointers, slop):
+                    results.append((doc_id, indexes, self._documents[doc_id]))
 
-                    if indexes:
-                        new_docs[doc_id].extend(indexes)
+            doc_id, pointer_id = heapq.heappop(ids)
 
-            docs = new_docs
+            if doc_id in ids_map:
+                ids_map[doc_id] -= 1
+                if ids_map[doc_id] == 0:
+                    del ids_map[doc_id]
 
-        for doc_id, values in docs.items():
-            doc = self._documents[doc_id]
-            result = {"content": doc["content"]}
-            if score:
-                result["score"] = self._bm25(doc_id, values)
+            token, skip_len, idx = (
+                pointers[pointer_id]["token"],
+                pointers[pointer_id]["skip_len"],
+                pointers[pointer_id]["elem_idx"],
+            )
 
-            results.append(result)
+            # use skip pointer
+            next_idx = (idx // skip_len + 1) * skip_len
+            while (
+                next_idx < len(self._index[token]) - 1
+                and self._index[token][next_idx][0] < ids[0][0]
+            ):
+                idx = next_idx
+                next_idx = (idx // skip_len + 1) * skip_len
 
-        if score:
-            return sorted(results, key=lambda x: x["score"], reverse=True)
-        else:
-            return results
+            if idx + 1 > len(self._index[token]) - 1:
+                break
+
+            heapq.heappush(ids, (self._index[token][idx + 1][0], pointer_id))
+            pointers[pointer_id]["elem_idx"] += 1
+            ids_map[self._index[token][idx + 1][0]] += 1
+
+        print(results)
+        return results
