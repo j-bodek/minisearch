@@ -68,6 +68,47 @@ class Index:
 
         return score
 
+    def _bm25_new(
+        self,
+        doc_id: str,
+        token_groups: list[list],
+        k: float = 1.5,
+        b: float = 0.75,
+        eps: float = 0.5,
+    ) -> float:
+        score = 0.0
+
+        for tokens in token_groups:
+
+            cur_score = 0.0
+
+            for token in tokens:
+                _, t, tf = token
+                idf = math.log(
+                    (
+                        (len(self._documents) - len(self._index[t]) + eps)
+                        / (len(self._index[t]) + eps)
+                    )
+                    + 1
+                )
+
+                score += idf * (
+                    (tf * (k + 1))
+                    / (
+                        tf
+                        + k
+                        * (
+                            1
+                            - b
+                            + b * (self._documents[doc_id]["len"] / self._avg_doc_len)
+                        )
+                    )
+                )
+
+            score = max(score, cur_score)
+
+        return score
+
     def add(self, doc: str) -> str:
         doc_id = str(uuid.uuid4())
 
@@ -190,6 +231,7 @@ class Index:
 
     def _match(self, docs, min_slop):
         result = []
+        tfs = {}
         cur_indexes = []
         slop, indexes_window = 0, [0 for _ in range(len(docs))]
         token_groups = defaultdict(lambda: {"heap": []})
@@ -213,20 +255,28 @@ class Index:
         for i, group in enumerate(docs):
             for item in group:
                 _, token, doc_idx = item
+                if token not in tfs:
+                    tfs[token] = len(self._index[token][doc_idx][1][1])
+
                 idx = self._index[token][doc_idx][1][1][0]
                 heapq.heappush(token_groups[i]["heap"], (idx, i, token, doc_idx, 0))
 
-            indexes_window[i] = token_groups[i]["heap"][0][0]
+            indexes_window[i] = (
+                token_groups[i]["heap"][0][0],
+                token_groups[i]["heap"][0][2],
+                tfs[token_groups[i]["heap"][0][2]],
+            )
             heapq.heappush(cur_indexes, get_next(i))
 
         while cur_indexes:
             # check slop
             slop = 0
+
             for i in range(len(indexes_window) - 1):
-                slop += abs(indexes_window[i] - (indexes_window[i + 1] - 1))
+                slop += abs(indexes_window[i][0] - (indexes_window[i + 1][0] - 1))
 
             if slop <= min_slop:
-                result.append(cur_indexes)
+                result.append(indexes_window.copy())
 
             token_idx, group_id, token, doc_idx, idx = heapq.heappop(cur_indexes)
             _next = get_next(group_id)
@@ -234,7 +284,7 @@ class Index:
             if _next is None:
                 continue
 
-            indexes_window[group_id] = _next[0]
+            indexes_window[group_id] = (_next[0], _next[2], tfs[_next[2]])
             heapq.heappush(cur_indexes, _next)
 
         return result
@@ -279,7 +329,7 @@ class Index:
     def _search(
         self, query: str, slop: int = 0, fuzzy: int = 0, score: bool = True
     ) -> list[dict]:
-        results = []
+        results = defaultdict(list)
         target_doc = None
         docs, indexes, same = [], [], True
         pointers = defaultdict(lambda: {"heap": [], "tokens_doc_idx": {}})
@@ -287,7 +337,7 @@ class Index:
 
         for token in tokens:
             if token not in self._index:
-                return results
+                return []
 
             for t in self._fuzzy_trie.search(fuzzy, token):
                 heapq.heappush(pointers[token]["heap"], (self._index[t][0][0], t))
@@ -307,7 +357,7 @@ class Index:
             if same:
                 doc_id = docs[0][0][0]
                 for token_indexes in self._match(docs, slop):
-                    results.append((doc_id, token_indexes, self._documents[doc_id]))
+                    results[doc_id].append(token_indexes)
 
                 same = True
                 for i, token in enumerate(tokens):
@@ -343,4 +393,13 @@ class Index:
 
                 break
 
-        return results
+        _results = []
+        for doc_id, token_groups in results.items():
+            doc = self._documents[doc_id]
+            result = {"content": doc["content"]}
+            if score:
+                result["score"] = self._bm25_new(doc_id, token_groups)
+
+            _results.append(result)
+
+        return sorted(_results, key=lambda x: x["score"], reverse=True)
