@@ -57,10 +57,10 @@ class Tokenizer:
             yield self._stemmer.stem(token)
 
     def tokenize_group(self, doc: str) -> tuple[int, ItemsView[str, list[int]]]:
-        tokens = defaultdict(set)
+        tokens = defaultdict(list)
 
         i = 0
         for i, token in enumerate(self.tokenize(doc)):
-            tokens[token].add(i)
+            tokens[token].append(i)
 
         return i + 1, tokens.items()

@@ -188,63 +188,155 @@ class Index:
                 (self._index[token][elem_idx][1][1][idx + 1], idx + 1, token_id),
             )
 
+    def _match(self, docs, min_slop):
+        result = []
+        cur_indexes = []
+        slop, indexes_window = 0, [0 for _ in range(len(docs))]
+        token_groups = defaultdict(lambda: {"heap": []})
+
+        def get_next(group_id):
+            if len(token_groups[group_id]["heap"]) == 0:
+                return None
+
+            token_idx, group_id, token, doc_idx, idx = heapq.heappop(
+                token_groups[group_id]["heap"]
+            )
+            if idx + 1 <= len(self._index[token][doc_idx][1][1]) - 1:
+                new_token_idx = self._index[token][doc_idx][1][1][idx + 1]
+                heapq.heappush(
+                    token_groups[group_id]["heap"],
+                    (new_token_idx, group_id, token, doc_idx, idx + 1),
+                )
+
+            return (token_idx, group_id, token, doc_idx, idx)
+
+        for i, group in enumerate(docs):
+            for item in group:
+                _, token, doc_idx = item
+                idx = self._index[token][doc_idx][1][1][0]
+                heapq.heappush(token_groups[i]["heap"], (idx, i, token, doc_idx, 0))
+
+            indexes_window[i] = token_groups[i]["heap"][0][0]
+            heapq.heappush(cur_indexes, get_next(i))
+
+        while cur_indexes:
+            # check slop
+            slop = 0
+            for i in range(len(indexes_window) - 1):
+                slop += abs(indexes_window[i] - (indexes_window[i + 1] - 1))
+
+            if slop <= min_slop:
+                result.append(cur_indexes)
+
+            token_idx, group_id, token, doc_idx, idx = heapq.heappop(cur_indexes)
+            _next = get_next(group_id)
+
+            if _next is None:
+                continue
+
+            indexes_window[group_id] = _next[0]
+            heapq.heappush(cur_indexes, _next)
+
+        return result
+
+    def _next_doc_index(self, pointers):
+        doc_ids = []
+        while pointers["heap"] and (
+            len(doc_ids) == 0 or doc_ids[0][0] == pointers["heap"][0][0]
+        ):
+            doc_id, token = heapq.heappop(pointers["heap"])
+
+            idx = pointers["tokens_doc_idx"][token]
+
+            if idx + 1 <= len(self._index[token]) - 1:
+                heapq.heappush(
+                    pointers["heap"], (self._index[token][idx + 1][0], token)
+                )
+                pointers["tokens_doc_idx"][token] += 1
+            else:
+                del pointers["tokens_doc_idx"][token]
+
+            doc_ids.append((doc_id, token, idx))
+
+        return doc_ids
+
+    def _geq_doc_index(self, pointers, target_doc):
+        while pointers["heap"] and pointers["heap"][0][0] < target_doc:
+            _, token = heapq.heappop(pointers["heap"])
+            new_idx = bisect.bisect_left(
+                self._index[token], target_doc, key=lambda x: x[0]
+            )
+            if new_idx > len(self._index[token]) - 1:
+                del pointers["tokens_doc_idx"][token]
+            else:
+                pointers["tokens_doc_idx"][token] = new_idx
+                heapq.heappush(
+                    pointers["heap"], (self._index[token][new_idx][0], token)
+                )
+
+        return self._next_doc_index(pointers)
+
     def _search(
         self, query: str, slop: int = 0, fuzzy: int = 0, score: bool = True
     ) -> list[dict]:
         results = []
         target_doc = None
         docs, indexes, same = [], [], True
+        pointers = defaultdict(lambda: {"heap": [], "tokens_doc_idx": {}})
         tokens = list(self._tokenizer.tokenize(query))
 
-        for t in tokens:
-            if t not in self._index:
+        for token in tokens:
+            if token not in self._index:
                 return results
 
-            doc_id = self._index[t][0][0]
-            if docs and docs[-1] != doc_id:
+            for t in self._fuzzy_trie.search(fuzzy, token):
+                heapq.heappush(pointers[token]["heap"], (self._index[t][0][0], t))
+                pointers[token]["tokens_doc_idx"][t] = 0
+
+            docs_ids = self._next_doc_index(pointers[token])
+            if docs and docs[-1][0][0] != docs_ids[0][0]:
                 same = False
 
-            docs.append(doc_id)
+            docs.append(docs_ids)
             indexes.append(0)
 
-        target_doc = max(docs)
+        target_doc = max(docs, key=lambda x: x[0][0])[0][0]
 
         # find intersection on docs
         while True:
             if same:
-                for token_indexes in self.match(tokens, indexes, slop):
+                doc_id = docs[0][0][0]
+                for token_indexes in self._match(docs, slop):
                     results.append((doc_id, token_indexes, self._documents[doc_id]))
 
                 same = True
                 for i, token in enumerate(tokens):
-                    if indexes[i] + 1 > len(self._index[token]) - 1:
+                    docs_ids = self._next_doc_index(pointers[token])
+                    if len(docs_ids) == 0:
                         break
 
-                    indexes[i] += 1
-                    doc_id = self._index[token][indexes[i]][0]
-                    docs[i] = doc_id
-                    target_doc = max(target_doc, doc_id)
-                    if i != 0 and doc_id != docs[i - 1]:
+                    docs[i] = docs_ids
+                    target_doc = max(target_doc, docs_ids[0][0])
+
+                    if i != 0 and docs[i][0][0] != docs[i - 1][0][0]:
                         same = False
                 else:
                     continue
 
                 break
             else:
-                same = True
+                same, cur_target_doc = True, target_doc
                 for i, token in enumerate(tokens):
-                    new_idx = bisect.bisect_left(
-                        self._index[token], target_doc, key=lambda x: x[0]
-                    )
+                    if cur_target_doc != docs[i][0][0]:
+                        docs_ids = self._geq_doc_index(pointers[token], target_doc)
 
-                    if new_idx > len(self._index[token]) - 1:
-                        break
+                        if len(docs_ids) == 0:
+                            break
 
-                    indexes[i] = new_idx
-                    doc_id = self._index[token][new_idx][0]
-                    docs[i] = doc_id
-                    target_doc = max(target_doc, doc_id)
-                    if i != 0 and doc_id != docs[i - 1]:
+                        docs[i] = docs_ids
+                        target_doc = max(target_doc, docs_ids[0][0])
+
+                    if i != 0 and docs[i][0][0] != docs[i - 1][0][0]:
                         same = False
                 else:
                     continue
