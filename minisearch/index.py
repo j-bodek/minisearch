@@ -17,58 +17,7 @@ class Index:
         for d in range(4):
             self._fuzzy_trie.init_automaton(d)
 
-    def _flatten_docs_matches(self, tokens: list[list]):
-
-        for t in tokens:
-            flatten_token = []
-            while t:
-                flatten_token.append([t[0], t[1], t[2], t[3]])
-                t = t[4]
-
-            yield flatten_token
-
     def _bm25(
-        self,
-        doc_id: str,
-        tokens: list[list],
-        k: float = 1.5,
-        b: float = 0.75,
-        eps: float = 0.5,
-    ) -> float:
-        score = 0.0
-
-        for flatten_tokens in self._flatten_docs_matches(tokens):
-
-            cur_score = 0.0
-
-            for token in flatten_tokens:
-                t, tf, _, _ = token
-                idf = math.log(
-                    (
-                        (len(self._documents) - len(self._index[t]) + eps)
-                        / (len(self._index[t]) + eps)
-                    )
-                    + 1
-                )
-
-                score += idf * (
-                    (tf * (k + 1))
-                    / (
-                        tf
-                        + k
-                        * (
-                            1
-                            - b
-                            + b * (self._documents[doc_id]["len"] / self._avg_doc_len)
-                        )
-                    )
-                )
-
-            score = max(score, cur_score)
-
-        return score
-
-    def _bm25_new(
         self,
         doc_id: str,
         token_groups: list[list],
@@ -126,131 +75,147 @@ class Index:
 
         return doc_id
 
-    def search(
-        self, query: str, slop: int = 0, fuzzy: int = 0, score: bool = True
-    ) -> list[dict]:
+    # def _final_match(self, docs, min_slop):
+    #     result = []
+    #     tfs = {}
+    #     slop, window = 0, [None for _ in range(len(docs))]
+    #     window_indexes = [None for _ in range(len(docs))]
+    #     token_groups = defaultdict(lambda: {"heap": []})
 
-        results: list[dict] = []
-        docs: dict[str, list] = {}
+    #     def get_closest(target, group_id, slop):
+    #         heap = []
 
-        for i, token in enumerate(self._tokenizer.tokenize(query)):
-            tokens = self._fuzzy_trie.search(fuzzy, token)
-            if not tokens or (i != 0 and not docs):
-                return results
+    #         while token_groups[group_id]["heap"]:
+    #             token_idx, group_id, token, doc_idx, idx = token_groups[group_id][
+    #                 "heap"
+    #             ].pop()
 
-            new_docs = defaultdict(list)
-            for t in tokens:
-                for doc_id, group in self._index[t]:
-                    if i != 0 and doc_id not in docs:
-                        continue
+    #             _next = None
+    #             for i in range(idx, len(self._index[token][doc_idx][1][1])):
+    #                 if (
+    #                     self._index[token][doc_idx][1][1][i] >= target
+    #                     and self._index[token][doc_idx][1][1][i] not in window
+    #                 ):
+    #                     _next = i
+    #                     break
 
-                    if i == 0:
-                        indexes = [[t, 0, group[0], group[1], None]]
-                    else:
-                        indexes = []
+    #             if _next is not None and _next > 0:
+    #                 prev_diff = abs(
+    #                     target - (self._index[token][doc_idx][1][1][_next - 1] - 1)
+    #                 )
+    #                 next_diff = abs(
+    #                     target - (self._index[token][doc_idx][1][1][_next] - 1)
+    #                 )
 
-                        for prev_token in docs[doc_id]:
-                            for index in group[1]:
-                                for s in range(0, (slop - prev_token[1]) + 1):
-                                    if (
-                                        index - s - 1 in prev_token[3]
-                                        or index + s - 1 in prev_token[3]
-                                    ):
-                                        indexes.append(
-                                            [
-                                                t,
-                                                prev_token[1] + s,
-                                                group[0],
-                                                group[1],
-                                                prev_token,
-                                            ]
-                                        )
+    #                 if (
+    #                     prev_diff < next_diff
+    #                     and self._index[token][doc_idx][1][1][_next - 1] not in window
+    #                 ):
+    #                     token_idx = self._index[token][doc_idx][1][1][_next - 1]
+    #                     heap.append((token_idx, group_id, token, doc_idx, _next - 1))
+    #                 else:
+    #                     token_idx = self._index[token][doc_idx][1][1][_next]
+    #                     heap.append((token_idx, group_id, token, doc_idx, _next))
 
-                    if indexes:
-                        new_docs[doc_id].extend(indexes)
+    #             elif _next is not None:
+    #                 token_idx = self._index[token][doc_idx][1][1][_next]
+    #                 heap.append((token_idx, group_id, token, doc_idx, _next))
 
-            docs = new_docs
+    #         min_diff, value = float("inf"), None
+    #         for v in heap:
+    #             if abs(target - (v[0] - 1)) < min_diff:
+    #                 min_diff, value = abs(target - (v[0] - 1)), v
 
-        for doc_id, values in docs.items():
-            doc = self._documents[doc_id]
-            result = {"content": doc["content"]}
-            if score:
-                result["score"] = self._bm25(doc_id, values)
+    #         heapq.heapify(heap)
+    #         token_groups[group_id]["heap"] = heap
+    #         if value:
+    #             return value
+    #         else:
+    #             return [None for _ in range(5)]
 
-            results.append(result)
+    #     def get_next(group_id):
+    #         if len(token_groups[group_id]["heap"]) == 0:
+    #             return [None for _ in range(5)]
 
-        if score:
-            return sorted(results, key=lambda x: x["score"], reverse=True)
-        else:
-            return results
+    #         token_idx, group_id, token, doc_idx, idx = heapq.heappop(
+    #             token_groups[group_id]["heap"]
+    #         )
+    #         if idx + 1 <= len(self._index[token][doc_idx][1][1]) - 1:
+    #             new_token_idx = self._index[token][doc_idx][1][1][idx + 1]
+    #             heapq.heappush(
+    #                 token_groups[group_id]["heap"],
+    #                 (new_token_idx, group_id, token, doc_idx, idx + 1),
+    #             )
 
-    def match(self, tokens, doc_indexes, min_slop):
-        indexes = []
-        slop, token_indexes = 0, [0 for _ in range(len(tokens))]
+    #         return (token_idx, group_id, token, doc_idx, idx)
 
-        # init indexes
-        for i, token in enumerate(tokens):
-            doc_idx = doc_indexes[i]
-            token_indexes[i] = self._index[token][doc_idx][1][1][0]
-            heapq.heappush(indexes, (self._index[token][doc_idx][1][1][0], 0, i))
+    #     for i, group in enumerate(docs):
+    #         for item in group:
+    #             _, token, doc_idx = item
+    #             if token not in tfs:
+    #                 tfs[token] = len(self._index[token][doc_idx][1][1])
 
-            if i > 0:
-                slop += abs(token_indexes[i - 1] - token_indexes[i])
+    #             idx = self._index[token][doc_idx][1][1][0]
+    #             heapq.heappush(token_groups[i]["heap"], (idx, i, token, doc_idx, 0))
 
-        while True:
-            # check if min slop is matched
-            if slop <= min_slop:
-                yield token_indexes
+    #         if i == 0:
+    #             window[i] = token_groups[i]["heap"][0][0]
 
-            token_idx, idx, token_id = heapq.heappop(indexes)
-            token, elem_idx = (
-                tokens[token_id],
-                doc_indexes[token_id],
-            )
-            if idx + 1 > len(self._index[token][elem_idx][1][1]) - 1:
-                break
+    #         window_indexes[i] = (i, token_groups[i]["heap"][0][2], 0)
 
-            token_idx = self._index[token][elem_idx][1][1][idx + 1]
+    #     cur_index, back = min(len(window) - 1, 1), False
+    #     while True:
+    #         print(window, cur_index)
+    #         if cur_index == 0 or back:
+    #             next_token_idx, next_group_id, next_token, next_doc_idx, next_idx = (
+    #                 get_next(cur_index)
+    #             )
+    #         else:
+    #             next_token_idx, next_group_id, next_token, next_doc_idx, next_idx = (
+    #                 get_closest(
+    #                     window[cur_index - 1],
+    #                     window_indexes[cur_index][0],
+    #                     min_slop - window_indexes[cur_index - 1][2],
+    #                 )
+    #             )
 
-            # update slop
-            if token_id > 0:
-                # update next slop
-                slop -= abs(token_indexes[token_id - 1] - token_indexes[token_id])
-                slop += abs(token_indexes[token_id - 1] - token_idx)
+    #         if next_token_idx is None:
+    #             break
 
-            if token_id < len(token_indexes) - 1:
-                # update previous slop
-                slop -= abs(token_indexes[token_id] - token_indexes[token_id + 1])
-                slop += abs(token_idx - token_indexes[token_id + 1])
+    #         cur_slop = window_indexes[cur_index - 1][2] if cur_index > 0 else 0
+    #         diff = (
+    #             abs(window[cur_index - 1] - (next_token_idx - 1))
+    #             if cur_index > 0
+    #             else 0
+    #         )
+    #         print(window, cur_index, next_token_idx)
 
-            token_indexes[token_id] = token_idx
-            heapq.heappush(
-                indexes,
-                (self._index[token][elem_idx][1][1][idx + 1], idx + 1, token_id),
-            )
+    #         if cur_slop + diff > min_slop:
+    #             cur_index -= 1
+    #             back = True
+    #         elif cur_index == len(window) - 1:
+    #             window[cur_index] = next_token_idx
+    #             window_indexes[cur_index] = (next_group_id, next_token, cur_slop + diff)
+    #             result.append(
+    #                 [
+    #                     (window[i], window_indexes[i][1], tfs[window_indexes[i][1]])
+    #                     for i in range(len(window))
+    #                 ]
+    #             )
+    #             cur_index -= 1
+    #             back = True
+    #         else:
+    #             window[cur_index] = next_token_idx
+    #             window_indexes[cur_index] = (next_group_id, next_token, cur_slop + diff)
+    #             cur_index += 1
+    #             back = False
 
-    def _match(self, docs, min_slop):
+    #     return result
+
+    def _slow_match(self, docs, min_slop):
         result = []
         tfs = {}
-        cur_indexes = []
-        slop, indexes_window = 0, [0 for _ in range(len(docs))]
-        token_groups = defaultdict(lambda: {"heap": []})
-
-        def get_next(group_id):
-            if len(token_groups[group_id]["heap"]) == 0:
-                return None
-
-            token_idx, group_id, token, doc_idx, idx = heapq.heappop(
-                token_groups[group_id]["heap"]
-            )
-            if idx + 1 <= len(self._index[token][doc_idx][1][1]) - 1:
-                new_token_idx = self._index[token][doc_idx][1][1][idx + 1]
-                heapq.heappush(
-                    token_groups[group_id]["heap"],
-                    (new_token_idx, group_id, token, doc_idx, idx + 1),
-                )
-
-            return (token_idx, group_id, token, doc_idx, idx)
+        indexes = [[] for _ in range(len(docs))]
 
         for i, group in enumerate(docs):
             for item in group:
@@ -258,36 +223,154 @@ class Index:
                 if token not in tfs:
                     tfs[token] = len(self._index[token][doc_idx][1][1])
 
-                idx = self._index[token][doc_idx][1][1][0]
-                heapq.heappush(token_groups[i]["heap"], (idx, i, token, doc_idx, 0))
+                indexes[i].extend(
+                    [(idx, token) for idx in self._index[token][doc_idx][1][1]]
+                )
 
-            indexes_window[i] = (
-                token_groups[i]["heap"][0][0],
-                token_groups[i]["heap"][0][2],
-                tfs[token_groups[i]["heap"][0][2]],
-            )
-            heapq.heappush(cur_indexes, get_next(i))
+        def combine(indexes, idx=0):
+            if idx > len(indexes) - 1:
+                return []
 
-        while cur_indexes:
-            # check slop
+            elements = list(combine(indexes, idx=idx + 1))
+            for e in indexes[idx]:
+                if idx < len(indexes) - 1:
+                    for el in elements:
+                        if (
+                            e not in el
+                            and el[0][0] >= e[0] - min_slop - 1
+                            and el[0][0] <= e[0] + min_slop + 2
+                        ):
+                            yield [e] + el
+                else:
+                    yield [e]
+
+        for window in combine(indexes):
             slop = 0
-
-            for i in range(len(indexes_window) - 1):
-                slop += abs(indexes_window[i][0] - (indexes_window[i + 1][0] - 1))
+            for i in range(len(window) - 1):
+                slop += abs(window[i][0] - (window[i + 1][0] - 1))
 
             if slop <= min_slop:
-                result.append(indexes_window.copy())
-
-            token_idx, group_id, token, doc_idx, idx = heapq.heappop(cur_indexes)
-            _next = get_next(group_id)
-
-            if _next is None:
-                continue
-
-            indexes_window[group_id] = (_next[0], _next[2], tfs[_next[2]])
-            heapq.heappush(cur_indexes, _next)
+                result.append([(i, token, tfs[token]) for (i, token) in window])
 
         return result
+
+    def _match(self, docs, min_slop):
+        results = []
+        indexes, tfs = defaultdict(list), {}
+
+        for group_id, group in enumerate(docs):
+            heap, token_indexes = [], {}
+            for item in group:
+                _, token, doc_idx = item
+                tfs[token] = len(self._index[token][doc_idx][1][1])
+                heapq.heappush(
+                    heap, (self._index[token][doc_idx][1][1][0], token, doc_idx)
+                )
+                token_indexes[token] = 0
+
+            while token_indexes:
+                idx, token, doc_idx = heapq.heappop(heap)
+                token_indexes[token] += 1
+                if len(self._index[token][doc_idx][1][1]) - 1 < token_indexes[token]:
+                    del token_indexes[token]
+                else:
+                    heapq.heappush(
+                        heap,
+                        (
+                            self._index[token][doc_idx][1][1][token_indexes[token]],
+                            token,
+                            doc_idx,
+                        ),
+                    )
+
+                indexes[group_id].append((idx, token))
+
+        window = [(None, None) for i in range(len(indexes))]
+        window_indexes = [(-1, -1) for i in range(len(indexes))]
+
+        def get_closest(start, target, indexes, cur_index, slop):
+            _next = None
+            for i in range(max(start - slop, 0), len(indexes)):
+                if not [
+                    e
+                    for j, e in enumerate(window)
+                    if e == indexes[i] and j != cur_index
+                ]:
+                    diff = abs(target - (indexes[i][0] - 1))
+                    if diff <= slop:
+                        _next = i
+                        break
+
+            if _next is not None:
+                return indexes[_next], _next
+            else:
+                return None, -1
+
+        def get_next(index, indexes, cur_index):
+            while index + 1 <= len(indexes) - 1:
+                if not [
+                    e
+                    for j, e in enumerate(window)
+                    if e == indexes[index + 1] and j < cur_index
+                ]:
+                    return indexes[index + 1], index + 1
+
+                index += 1
+
+            return None, -1
+
+        cur_index, back, end_reached = 0, False, None
+        while True:
+            if (cur_index == end_reached and back) or cur_index < 0:
+                break
+
+            if cur_index == 0 or back:
+                next_item, next_i = get_next(
+                    window_indexes[cur_index][0], indexes[cur_index], cur_index
+                )
+            else:
+                next_item, next_i = get_closest(
+                    window_indexes[cur_index][0],
+                    window[cur_index - 1][0],
+                    indexes[cur_index],
+                    cur_index,
+                    min_slop - window_indexes[cur_index - 1][1],
+                )
+
+            if next_item is None and (cur_index == 0 or back):
+                end_reached = (
+                    min(end_reached, cur_index)
+                    if end_reached is not None
+                    else cur_index
+                )
+
+            if next_item is None:
+                cur_index -= 1
+                back = True
+            else:
+                cur_slop = window_indexes[cur_index - 1][1] if cur_index > 0 else 0
+                diff = (
+                    abs(window[cur_index - 1][0] - (next_item[0] - 1))
+                    if cur_index > 0
+                    else 0
+                )
+
+                if cur_slop + diff > min_slop:
+                    cur_index -= 1
+                    back = True
+                elif cur_index == len(window) - 1:
+                    window[cur_index] = next_item
+                    window_indexes[cur_index] = (next_i, cur_slop + diff)
+                    results.append([(i, token, tfs[token]) for (i, token) in window])
+                    cur_index -= 1
+                    back = True
+                else:
+                    window[cur_index] = next_item
+                    window_indexes[cur_index] = (next_i, cur_slop + diff)
+                    cur_index += 1
+                    back = False
+
+        return results
 
     def _next_doc_index(self, pointers):
         doc_ids = []
@@ -297,6 +380,7 @@ class Index:
             doc_id, token = heapq.heappop(pointers["heap"])
 
             idx = pointers["tokens_doc_idx"][token]
+            # print(f"{doc_id} - {token} - {idx} - {len(self._index[token])}")
 
             if idx + 1 <= len(self._index[token]) - 1:
                 heapq.heappush(
@@ -326,7 +410,7 @@ class Index:
 
         return self._next_doc_index(pointers)
 
-    def _search(
+    def search(
         self, query: str, slop: int = 0, fuzzy: int = 0, score: bool = True
     ) -> list[dict]:
         results = defaultdict(list)
@@ -335,15 +419,16 @@ class Index:
         pointers = defaultdict(lambda: {"heap": [], "tokens_doc_idx": {}})
         tokens = list(self._tokenizer.tokenize(query))
 
-        for token in tokens:
-            if token not in self._index:
-                return []
+        for token_id, token in enumerate(tokens):
 
             for t in self._fuzzy_trie.search(fuzzy, token):
-                heapq.heappush(pointers[token]["heap"], (self._index[t][0][0], t))
-                pointers[token]["tokens_doc_idx"][t] = 0
+                heapq.heappush(pointers[token_id]["heap"], (self._index[t][0][0], t))
+                pointers[token_id]["tokens_doc_idx"][t] = 0
 
-            docs_ids = self._next_doc_index(pointers[token])
+            if len(pointers[token_id]["heap"]) == 0:
+                return []
+
+            docs_ids = self._next_doc_index(pointers[token_id])
             if docs and docs[-1][0][0] != docs_ids[0][0]:
                 same = False
 
@@ -361,7 +446,7 @@ class Index:
 
                 same = True
                 for i, token in enumerate(tokens):
-                    docs_ids = self._next_doc_index(pointers[token])
+                    docs_ids = self._next_doc_index(pointers[i])
                     if len(docs_ids) == 0:
                         break
 
@@ -378,7 +463,7 @@ class Index:
                 same, cur_target_doc = True, target_doc
                 for i, token in enumerate(tokens):
                     if cur_target_doc != docs[i][0][0]:
-                        docs_ids = self._geq_doc_index(pointers[token], target_doc)
+                        docs_ids = self._geq_doc_index(pointers[i], target_doc)
 
                         if len(docs_ids) == 0:
                             break
@@ -398,8 +483,149 @@ class Index:
             doc = self._documents[doc_id]
             result = {"content": doc["content"]}
             if score:
-                result["score"] = self._bm25_new(doc_id, token_groups)
+                result["score"] = self._bm25(doc_id, token_groups)
 
             _results.append(result)
 
-        return sorted(_results, key=lambda x: x["score"], reverse=True)
+        if score:
+            return sorted(_results, key=lambda x: x["score"], reverse=True)
+        else:
+            return _results
+
+    """
+    HELPER
+    """
+
+    def _bm25_slow(
+        self,
+        doc_id: str,
+        token_groups: list[list],
+        k: float = 1.5,
+        b: float = 0.75,
+        eps: float = 0.5,
+    ) -> float:
+        score = 0.0
+
+        for tokens in token_groups:
+
+            cur_score = 0.0
+
+            for token in tokens:
+                _, t, tf = token
+                idf = math.log(
+                    (
+                        (len(self._documents) - len(self._index[t]) + eps)
+                        / (len(self._index[t]) + eps)
+                    )
+                    + 1
+                )
+
+                score += idf * (
+                    (tf * (k + 1))
+                    / (
+                        tf
+                        + k
+                        * (
+                            1
+                            - b
+                            + b * (self._documents[doc_id]["len"] / self._avg_doc_len)
+                        )
+                    )
+                )
+
+            score = max(score, cur_score)
+
+        return score
+
+    def _slow_match_2(self, doc, tokens, fuzzy, min_slop):
+        result = []
+        tfs = {}
+        indexes = [[] for _ in range(len(tokens))]
+
+        for i, t in enumerate(tokens):
+            for token in self._fuzzy_trie.search(fuzzy, t):
+                doc_idx = [
+                    i
+                    for i in range(len(self._index[token]))
+                    if self._index[token][i][0] == doc
+                ]
+
+                if not doc_idx:
+                    continue
+
+                doc_idx = doc_idx[0]
+                if token not in tfs:
+                    tfs[token] = len(self._index[token][doc_idx][1][1])
+
+                indexes[i].extend(
+                    [(idx, token) for idx in self._index[token][doc_idx][1][1]]
+                )
+
+        def combine(indexes, idx=0):
+            if idx > len(indexes) - 1:
+                return []
+
+            elements = list(combine(indexes, idx=idx + 1))
+            for e in indexes[idx]:
+                if idx < len(indexes) - 1:
+                    for el in elements:
+                        if (
+                            e not in el
+                            and el[0][0] >= e[0] - min_slop - 1
+                            and el[0][0] <= e[0] + min_slop + 2
+                        ):
+                            yield [e] + el
+                else:
+                    yield [e]
+
+        for window in combine(indexes):
+            slop = 0
+            for i in range(len(window) - 1):
+                slop += abs(window[i][0] - (window[i + 1][0] - 1))
+
+            if slop <= min_slop:
+                result.append([(i, token, tfs[token]) for (i, token) in window])
+        return result
+
+    def _slow_search(
+        self, query: str, slop: int = 0, fuzzy: int = 0, score: bool = True
+    ) -> list[dict]:
+        results = defaultdict(list)
+        docs = set()
+        tokens = list(self._tokenizer.tokenize(query))
+
+        for i, token in enumerate(tokens):
+            if i > 0 and not docs:
+                return []
+
+            cur_docs = set()
+            fuzzy_tokens = list(self._fuzzy_trie.search(fuzzy, token))
+            if not fuzzy_tokens:
+                return []
+
+            for t in fuzzy_tokens:
+                for d in self._index[t]:
+                    cur_docs.add(d[0])
+
+            if i == 0:
+                docs = cur_docs
+            else:
+                docs = docs.intersection(cur_docs)
+
+        for d in docs:
+            for token_indexes in self._slow_match_2(d, tokens, fuzzy, slop):
+                results[d].append(token_indexes)
+
+        _results = []
+        for doc_id, token_groups in results.items():
+            doc = self._documents[doc_id]
+            result = {"content": doc["content"]}
+            if score:
+                result["score"] = self._bm25_slow(doc_id, token_groups)
+
+            _results.append(result)
+
+        if score:
+            return sorted(_results, key=lambda x: x["score"], reverse=True)
+        else:
+            return _results
