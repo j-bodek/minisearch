@@ -7,6 +7,126 @@ from collections import defaultdict
 from minisearch_rs import Trie
 
 
+class TokensIterator:
+    def __init__(self):
+        self.heap = []
+        self.generators = []
+        self.gen_meta = []
+        self.last_gen_id = None
+
+    def init_generator(self, token, tfs, gen):
+        try:
+            heapq.heappush(self.heap, (next(gen), len(self.generators)))
+            self.generators.append(gen)
+            self.gen_meta.append((token, tfs))
+        except StopIteration:
+            pass
+
+    def closest(self, target):
+        while self.heap and self.heap[0][0] <= target:
+            val = None
+            _, gen_id = heapq.heappop(self.heap)
+            while True:
+                try:
+                    if (val := next(self.generators[gen_id])) > target:
+                        break
+                except StopIteration:
+                    break
+
+            if val is not None:
+                heapq.heappush(self.heap, (val, gen_id))
+
+        if self.heap:
+            self.last_gen_id = self.heap[0][1]
+            return self.heap[0][0]
+
+        return None
+
+    def next(self):
+        if self.heap:
+            _, gen_id = heapq.heappop(self.heap)
+            try:
+                heapq.heappush(self.heap, (next(self.generators[gen_id]), gen_id))
+            except StopIteration:
+                pass
+
+        if self.heap:
+            self.last_gen_id = self.heap[0][1]
+            return self.heap[0][0]
+
+        return None
+
+    def peak(self):
+        if self.heap:
+            self.last_gen_id = self.heap[0][1]
+            return self.heap[0][0]
+
+        return None
+
+    def last_meta(self):
+        if self.last_gen_id is not None:
+            return self.gen_meta[self.last_gen_id]
+
+        return None, None
+
+
+class WindowAndIterator:
+    def __init__(self, min_slop):
+        self.min_slop = min_slop
+        self.slop = 0
+        self.window = []
+        self.heap = []
+        self.iterators = []
+
+    def init_iterator(self, iterator):
+        val = iterator.peak()
+        if val is not None:
+            heapq.heappush(self.heap, (val, len(self.iterators)))
+            self.iterators.append(iterator)
+            if self.window:
+                self.slop += abs(self.window[-1] - (val - 1))
+
+            self.window.append(val)
+
+    def full_window(self):
+        window = []
+        for iter_id, idx in enumerate(self.window):
+            token, tfs = self.iterators[iter_id].last_meta()
+            window.append((idx, token, tfs))
+        return window
+
+    def next(self):
+        if not self.heap:
+            return None, None
+
+        top = self.heap[0][0]
+        while self.heap and top == self.heap[0][0]:
+            _, iter_id = heapq.heappop(self.heap)
+            if (val := self.iterators[iter_id].next()) is not None:
+                heapq.heappush(self.heap, (val, iter_id))
+
+        return self.heap[0] if self.heap else (None, None)
+
+    def join(self):
+        while True:
+            if self.slop <= self.min_slop:
+                yield self.full_window()
+
+            val, iter_id = self.next()
+            if val is None:
+                break
+
+            if iter_id > 0:
+                self.slop -= abs(self.window[iter_id - 1] - (self.window[iter_id] - 1))
+                self.slop += abs(self.window[iter_id - 1] - (val - 1))
+
+            if iter_id < len(self.window) - 1:
+                self.slop -= abs(self.window[iter_id] - (self.window[iter_id + 1] - 1))
+                self.slop += abs(val - (self.window[iter_id + 1] - 1))
+
+            self.window[iter_id] = val
+
+
 class Index:
     def __init__(self):
         self._tokenizer = Tokenizer()
@@ -213,46 +333,164 @@ class Index:
     #     return result
 
     def _slow_match(self, docs, min_slop):
-        result = []
         tfs = {}
-        indexes = [[] for _ in range(len(docs))]
 
-        for i, group in enumerate(docs):
+        for group in docs:
             for item in group:
                 _, token, doc_idx = item
                 if token not in tfs:
                     tfs[token] = len(self._index[token][doc_idx][1][1])
 
-                indexes[i].extend(
-                    [(idx, token) for idx in self._index[token][doc_idx][1][1]]
-                )
-
-        def combine(indexes, idx=0):
-            if idx > len(indexes) - 1:
+        def join(idx):
+            if idx > len(docs) - 1:
                 return []
 
-            elements = list(combine(indexes, idx=idx + 1))
-            for e in indexes[idx]:
-                if idx < len(indexes) - 1:
-                    for el in elements:
-                        if (
-                            e not in el
-                            and el[0][0] >= e[0] - min_slop - 1
-                            and el[0][0] <= e[0] + min_slop + 2
-                        ):
-                            yield [e] + el
-                else:
-                    yield [e]
+            elements = list(join(idx=idx + 1))
+            for item in docs[idx]:
+                _, token, doc_idx = item
+                for e in self._index[token][doc_idx][1][1]:
+                    if idx < len(docs) - 1:
+                        for slop, el in elements:
+                            if el[0][0] > e and el[0][0] <= e + (min_slop - slop) + 1:
+                                # if (
+                                #     el[0][0] >= e - (min_slop - slop) - 1
+                                #     and el[0][0] <= e + (min_slop - slop) + 1
+                                #     and (e, token) not in el
+                                # ):
+                                yield slop + abs(e - (el[0][0] - 1)), [(e, token)] + el
+                    else:
+                        yield 0, [(e, token)]
 
-        for window in combine(indexes):
-            slop = 0
-            for i in range(len(window) - 1):
-                slop += abs(window[i][0] - (window[i + 1][0] - 1))
+        for slop, window in join(idx=0):
 
             if slop <= min_slop:
-                result.append([(i, token, tfs[token]) for (i, token) in window])
+                yield [(i, token, tfs[token]) for (i, token) in window]
 
-        return result
+    def _match_mis_queue(self, docs, min_slop):
+
+        window_iterator = WindowAndIterator(min_slop=min_slop)
+
+        for group in docs:
+            tokens_iterator = TokensIterator()
+
+            for item in group:
+                _, token, doc_idx = item
+
+                tokens_iterator.init_generator(
+                    token,
+                    self._index[token][doc_idx][1][0],
+                    (x for x in self._index[token][doc_idx][1][1]),
+                )
+
+            window_iterator.init_iterator(tokens_iterator)
+
+        yield from window_iterator.join()
+
+    def _match_mis_gready(self, docs, min_slop):
+
+        token_iterators = []
+
+        for group in docs:
+            tokens_iterator = TokensIterator()
+
+            for item in group:
+                _, token, doc_idx = item
+
+                tokens_iterator.init_generator(
+                    token,
+                    self._index[token][doc_idx][1][0],
+                    (x for x in self._index[token][doc_idx][1][1]),
+                )
+
+            token_iterators.append(tokens_iterator)
+
+        window = [token_iterators[i].peak() for i in range(len(token_iterators))]
+        slops = [0 for _ in range(len(token_iterators))]
+
+        i = 1
+        while True:
+            end = False
+            while i <= len(window) - 1:
+                if (val := token_iterators[i].closest(window[i - 1])) is not None:
+                    window[i] = val
+                else:
+                    end = True
+                    break
+
+                slop = slops[i - 1] + abs(window[i - 1] - (window[i] - 1))
+                if slop > min_slop:
+                    break
+
+                slops[i] = slop
+                i += 1
+
+            if end:
+                break
+
+            if i > len(window) - 1:
+                w = []
+                for iter_id, idx in enumerate(window):
+                    token, tfs = token_iterators[iter_id].last_meta()
+                    w.append((idx, token, tfs))
+                yield w
+
+            if (val := token_iterators[0].next()) is None:
+                break
+
+            i = 1
+            window[0] = val
+
+    def _match_mis(self, docs, min_slop):
+
+        token_iterators = []
+        tfs = {}
+
+        for group in docs:
+            tokens_iterator = TokensIterator()
+
+            for item in group:
+                _, token, doc_idx = item
+
+                tfs[token] = len(self._index[token][doc_idx][1][1])
+                tokens_iterator.init_generator(
+                    token,
+                    self._index[token][doc_idx][1][0],
+                    (x for x in self._index[token][doc_idx][1][1]),
+                )
+
+            token_iterators.append(tokens_iterator)
+
+        def combine(idx=0):
+            if idx > len(docs) - 1:
+                return []
+
+            val, token = token_iterators[idx].peak()
+            el_idx, elements = 0, list(combine(idx=idx + 1))
+            while val is not None:
+                if idx < len(docs) - 1 and elements:
+                    if elements[-1][1][0][0] < val - min_slop - 1:
+                        break
+
+                    for i in range(max(0, el_idx - min_slop - 2), len(elements)):
+                        el_idx = i
+                        slop, el = elements[i]
+                        if (
+                            el[0][0] >= val - (min_slop - slop) - 1
+                            and el[0][0] <= val + (min_slop - slop) + 1
+                            and (val, token) not in el
+                        ):
+                            yield slop + abs(val - (el[0][0] - 1)), [(val, token)] + el
+                        elif el[0][0] > val + min_slop + 1:
+                            break
+
+                elif idx == len(docs) - 1:
+                    yield 0, [(val, token)]
+
+                val, token = token_iterators[idx].next()
+
+        for slop, window in combine():
+            if slop <= min_slop:
+                yield [(i, token, tfs[token]) for (i, token) in window]
 
     def _match(self, docs, min_slop):
         results = []
@@ -288,17 +526,18 @@ class Index:
         window = [(None, None) for i in range(len(indexes))]
         window_indexes = [(-1, -1) for i in range(len(indexes))]
 
-        def get_closest(start, target, indexes, cur_index, slop):
+        def get_first_closest(start, target, indexes, cur_index, slop):
             _next = None
             for i in range(max(start - slop, 0), len(indexes)):
-                if not [
-                    e
-                    for j, e in enumerate(window)
-                    if e == indexes[i] and j != cur_index
-                ]:
+                if (
+                    indexes[i][0] >= target - slop
+                    and indexes[i] not in window[:cur_index]
+                ):
                     diff = abs(target - (indexes[i][0] - 1))
                     if diff <= slop:
                         _next = i
+                        break
+                    elif indexes[i][0] > target + slop:
                         break
 
             if _next is not None:
@@ -308,11 +547,7 @@ class Index:
 
         def get_next(index, indexes, cur_index):
             while index + 1 <= len(indexes) - 1:
-                if not [
-                    e
-                    for j, e in enumerate(window)
-                    if e == indexes[index + 1] and j < cur_index
-                ]:
+                if indexes[index + 1] not in window[:cur_index]:
                     return indexes[index + 1], index + 1
 
                 index += 1
@@ -329,7 +564,7 @@ class Index:
                     window_indexes[cur_index][0], indexes[cur_index], cur_index
                 )
             else:
-                next_item, next_i = get_closest(
+                next_item, next_i = get_first_closest(
                     window_indexes[cur_index][0],
                     window[cur_index - 1][0],
                     indexes[cur_index],
@@ -441,7 +676,7 @@ class Index:
         while True:
             if same:
                 doc_id = docs[0][0][0]
-                for token_indexes in self._match(docs, slop):
+                for token_indexes in self._match_mis_gready(docs, slop):
                     results[doc_id].append(token_indexes)
 
                 same = True
