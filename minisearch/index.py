@@ -16,11 +16,11 @@ class TokensIterator:
         self.gen_meta = []
         self.last_gen_id = None
 
-    def init_generator(self, token, tfs, gen):
+    def init_generator(self, token, distance, tfs, gen):
         try:
             heapq.heappush(self.heap, (next(gen), len(self.generators)))
             self.generators.append(gen)
-            self.gen_meta.append((token, tfs))
+            self.gen_meta.append((token, distance, tfs))
         except StopIteration:
             pass
 
@@ -166,17 +166,23 @@ class Index:
             )
         )
 
-    def _bm25(self, doc_id: str, token_groups: list[list]) -> float:
+    def _bm25(
+        self, doc_id: str, token_groups: list[list], fp_const: float = 0.8
+    ) -> float:
         score = 0.0
 
-        for tokens in token_groups:
+        for slop, tokens in token_groups:
+            print(slop)
 
             cur_score = 0.0
 
             for token in tokens:
-                _, t, tf = token
-                cur_score += self._tf_norm(doc_id, t, tf)
+                _, t, tf, distance = token
+                # tf norm and fuzziness penalty
+                cur_score += self._tf_norm(doc_id, t, tf) * math.pow(fp_const, distance)
 
+            # slop penalty
+            cur_score /= slop + 1
             score = max(score, cur_score)
 
         return score
@@ -260,10 +266,11 @@ class Index:
             tokens_iterator = TokensIterator()
 
             for item in group:
-                _, token, doc_idx = item
+                _, token, doc_idx, distance = item
 
                 tokens_iterator.init_generator(
                     token,
+                    distance,
                     self._index[token][doc_idx][1][0],
                     (x for x in self._index[token][doc_idx][1][1]),
                 )
@@ -296,9 +303,10 @@ class Index:
             if i > len(window) - 1:
                 w = []
                 for iter_id, idx in enumerate(window):
-                    token, tfs = token_iterators[iter_id].last_meta()
-                    w.append((idx, token, tfs))
-                yield w
+                    token, distance, tfs = token_iterators[iter_id].last_meta()
+                    w.append((idx, token, tfs, distance))
+
+                yield slops[-1], w
 
             if (val := token_iterators[0].next()) is None:
                 break
@@ -478,25 +486,25 @@ class Index:
         while pointers["heap"] and (
             len(doc_ids) == 0 or doc_ids[0][0] == pointers["heap"][0][0]
         ):
-            doc_id, token = heapq.heappop(pointers["heap"])
+            doc_id, token, d = heapq.heappop(pointers["heap"])
             idx = pointers["tokens_doc_idx"][token]
 
             if idx + 1 <= len(self._index[token]) - 1:
                 heapq.heappush(
-                    pointers["heap"], (self._index[token][idx + 1][0], token)
+                    pointers["heap"], (self._index[token][idx + 1][0], token, d)
                 )
                 pointers["tokens_doc_idx"][token] += 1
             else:
                 del pointers["tokens_doc_idx"][token]
 
             max_score = max(max_score, self._index[token][idx][2])
-            doc_ids.append((doc_id, token, idx))
+            doc_ids.append((doc_id, token, idx, d))
 
         return max_score, doc_ids
 
     def _geq_doc_index(self, pointers, target_doc):
         while pointers["heap"] and pointers["heap"][0][0] < target_doc:
-            _, token = heapq.heappop(pointers["heap"])
+            _, token, d = heapq.heappop(pointers["heap"])
             new_idx = bisect.bisect_left(
                 self._index[token], target_doc, key=lambda x: x[0]
             )
@@ -505,7 +513,7 @@ class Index:
             else:
                 pointers["tokens_doc_idx"][token] = new_idx
                 heapq.heappush(
-                    pointers["heap"], (self._index[token][new_idx][0], token)
+                    pointers["heap"], (self._index[token][new_idx][0], token, d)
                 )
 
         return self._next_doc_index(pointers)
@@ -527,8 +535,8 @@ class Index:
 
         for token_id, token in enumerate(tokens):
 
-            for t in self._fuzzy_trie.search(fuzzy, token):
-                heapq.heappush(pointers[token_id]["heap"], (self._index[t][0][0], t))
+            for d, t in self._fuzzy_trie.search(fuzzy, token):
+                heapq.heappush(pointers[token_id]["heap"], (self._index[t][0][0], t, d))
                 pointers[token_id]["tokens_doc_idx"][t] = 0
 
             if len(pointers[token_id]["heap"]) == 0:
@@ -554,8 +562,8 @@ class Index:
                     or sum(max_scores) > results[0][0]
                 ):
                     matches = []
-                    for token_indexes in self._match_mis_gready(docs, slop):
-                        matches.append(token_indexes)
+                    for slop, token_indexes in self._match_mis_gready(docs, slop):
+                        matches.append((slop, token_indexes))
 
                     if matches:
                         # calculate score
