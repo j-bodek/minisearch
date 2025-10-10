@@ -19,6 +19,7 @@ struct LevenshteinDfa {
         HashMap<u32, LevenshteinDfaState, BuildNoHashHasher<u32>>,
         BuildNoHashHasher<u32>,
     >,
+    states: HashMap<u32, Vec<State>, BuildNoHashHasher<u32>>,
 }
 
 pub struct LevenshteinAutomaton {
@@ -40,16 +41,17 @@ impl LevenshteinDfa {
             HashMap<u32, LevenshteinDfaState, BuildNoHashHasher<u32>>,
             BuildNoHashHasher<u32>,
         > = HashMap::default();
+        let mut states_map: HashMap<u32, Vec<State>, BuildNoHashHasher<u32>> = HashMap::default();
 
         let (_, _, states) = Self::initial_state(d);
         let char_vectors = Self::get_characteristic_vectors(2 * d + 1);
 
         // map states vector to corresponding numerical id
         let mut states_ids: HashMap<Vec<State>, u32> = HashMap::new();
-        dfa.insert(
-            Self::get_states_id(&states, &mut states_ids),
-            HashMap::default(),
-        );
+        let state_id = Self::get_states_id(&states, &mut states_ids);
+        dfa.insert(state_id, HashMap::default());
+        states_map.insert(state_id, states.clone());
+
         let mut states_stack = vec![states];
 
         while states_stack.len() > 0 {
@@ -76,10 +78,15 @@ impl LevenshteinDfa {
                 );
             }
 
-            dfa.insert(Self::get_states_id(&states, &mut states_ids), transitions);
+            let state_id = Self::get_states_id(&states, &mut states_ids);
+            dfa.insert(state_id, transitions);
+            states_map.insert(state_id, states);
         }
 
-        Self { dfa: dfa }
+        Self {
+            dfa: dfa,
+            states: states_map,
+        }
     }
 
     fn get_states_id(states: &Vec<State>, states_ids: &mut HashMap<Vec<State>, u32>) -> u32 {
@@ -300,6 +307,25 @@ impl LevenshteinAutomaton {
 
     pub fn can_match(&self, state: &LevenshteinDfaState) -> bool {
         state.state_id != 0
+    }
+
+    pub fn distance(&self, state: &LevenshteinDfaState) -> u16 {
+        match self.dfa.as_ref().states.get(&state.state_id) {
+            Some(states) => {
+                states
+                    .iter()
+                    .map(|s| {
+                        self.d as i32 - s.1 as i32
+                            + cmp::max(0, self.query_len as i32 - state.offset as i32 - s.0 as i32)
+                    })
+                    .fold(
+                        // distance is only called on matched words so it's save to use 'd' as upper bound
+                        self.d as u16,
+                        |d1, d2| if d1 < d2 as u16 { d1 } else { d2 as u16 },
+                    )
+            }
+            _ => self.query_len as u16,
+        }
     }
 
     fn get_characteristic_vector(&self, c: char, offset: u32) -> u32 {
