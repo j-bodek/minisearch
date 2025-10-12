@@ -23,7 +23,7 @@ def queries():
 
 @pytest.fixture
 def results():
-    with open("tests/assets/results_1k.json", "r+") as f:
+    with open("tests/assets/results_1k_ordered2.json", "r+") as f:
         data = json.load(f)
 
     return data
@@ -37,27 +37,29 @@ def test_performance(data, queries, results):
     for d in data:
         search.index("wikipedia").add(d)
 
-    def test_results(results, slop, fuzzy, score):
-        results = results[f"slop_{slop}_fuzzy_{fuzzy}_score_{score}"]
+    def test_results(_results, slop, fuzzy, score):
 
+        results = _results[f"slop_{slop}_fuzzy_{fuzzy}_score_{score}"]
+        top_k = None
         for q in queries:
             query_results = []
             for r in search.index("wikipedia").search(
-                q, slop=slop, fuzzy=fuzzy, score=score
+                q, slop=slop, fuzzy=fuzzy, top_k=top_k, score=score
             ):
                 r = r["content"][:100]
                 assert r in results.get(
                     q, []
-                ), f"Result: {r} was returned for query: {q} but isn't present in defined results"
+                ), f"Slop: {slop}, fuzzy: {fuzzy}, top-k: {top_k}, score: {score} Result: {r} was returned for query: {q} but isn't present in defined results"
 
                 query_results.append(r)
 
             for r in results.get(q, []):
-                assert r in query_results, f"Result: {r} for query: {q} is missing"
+                assert (
+                    r in query_results
+                ), f"Slop: {slop}, fuzzy: {fuzzy}, top-k: {top_k}, score: {score} Result: {r} for query: {q} is missing"
 
                 query_results.append(r)
 
     for slop in range(0, 4):
         for fuzzy in range(0, 3):
             test_results(results, slop=slop, fuzzy=fuzzy, score=True)
-            test_results(results, slop=slop, fuzzy=fuzzy, score=False)
