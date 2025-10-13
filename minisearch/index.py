@@ -4,8 +4,10 @@ import math
 
 from ulid import monotonic as ulid
 from .tokenize import Tokenizer
+from .parser import QueryParser
 from collections import defaultdict
 from minisearch_rs import Trie
+from line_profiler import profile
 
 
 class TokensIterator:
@@ -74,6 +76,7 @@ class TokensIterator:
 class Index:
     def __init__(self):
         self._tokenizer = Tokenizer()
+        self._parser = QueryParser()
         self._avg_doc_len = 0
         self._index = defaultdict(list)
         self._documents = {}
@@ -235,11 +238,10 @@ class Index:
 
         return self._next_doc_index(pointers)
 
+    @profile
     def search(
         self,
         query: str,
-        slop: int = 0,
-        fuzzy: int = 0,
         top_k: int = None,
         score: bool = True,
     ) -> list[dict]:
@@ -248,10 +250,13 @@ class Index:
         docs, indexes, same = [], [], True
         max_scores = []
         pointers = defaultdict(lambda: {"heap": [], "tokens_doc_idx": {}})
-        tokens = list(self._tokenizer.tokenize(query))
+        query, slop = self._parser.parse_slop(query.lower())
+        tokens = list(
+            self._tokenizer.tokenize_query(self._parser.parse_fuzziness(query))
+        )
 
-        for token_id, token in enumerate(tokens):
-
+        for token_id, (token, fuzzy) in enumerate(tokens):
+            fuzzy = max(fuzzy, 0)
             for d, t in self._fuzzy_trie.search(fuzzy, token):
                 if t != token and (len(t) <= fuzzy or len(token) <= fuzzy):
                     continue
@@ -295,10 +300,11 @@ class Index:
                             heapq.heappop(results)
                             heapq.heappush(results, (score, doc["content"]))
 
-                same = True
+                same, end = True, False
                 for i, token in enumerate(tokens):
                     max_score, docs_ids = self._next_doc_index(pointers[i])
                     if len(docs_ids) == 0:
+                        end = True
                         break
 
                     docs[i] = docs_ids
@@ -307,12 +313,11 @@ class Index:
 
                     if i != 0 and docs[i][0][0] != docs[i - 1][0][0]:
                         same = False
-                else:
-                    continue
 
-                break
+                if end:
+                    break
             else:
-                same, cur_target_doc = True, target_doc
+                same, end, cur_target_doc = True, False, target_doc
                 for i, token in enumerate(tokens):
                     if cur_target_doc != docs[i][0][0]:
                         max_score, docs_ids = self._geq_doc_index(
@@ -320,6 +325,7 @@ class Index:
                         )
 
                         if len(docs_ids) == 0:
+                            end = True
                             break
 
                         docs[i] = docs_ids
@@ -328,10 +334,9 @@ class Index:
 
                     if i != 0 and docs[i][0][0] != docs[i - 1][0][0]:
                         same = False
-                else:
-                    continue
 
-                break
+                if end:
+                    break
 
         return [
             {"score": s, "content": c}

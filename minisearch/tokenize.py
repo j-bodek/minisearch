@@ -49,7 +49,16 @@ class Tokenizer:
     def __init__(self):
         self._stemmer = SnowballStemmer()
 
-    def tokenize(self, doc: str) -> Generator[str, None, None]:
+    def tokenize_query(
+        self, query: Generator[tuple[str, int], None, None]
+    ) -> Generator[str, None, None]:
+        for token, distance in query:
+            if token in self.__class__.STOP_WORDS:
+                continue
+
+            yield self._stemmer.stem(token), distance
+
+    def tokenize_doc(self, doc: str) -> Generator[str, None, None]:
         for token in re.sub("[^A-Za-z0-9\s]+", "", doc).lower().split():
             if token in self.__class__.STOP_WORDS:
                 continue
@@ -60,7 +69,7 @@ class Tokenizer:
         tokens = defaultdict(list)
 
         i = 0
-        for i, token in enumerate(self.tokenize(doc)):
+        for i, token in enumerate(self.tokenize_doc(doc)):
             tokens[token].append(i)
 
         return i + 1, tokens.items()
