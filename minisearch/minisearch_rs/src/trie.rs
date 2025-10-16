@@ -1,5 +1,4 @@
 use crate::automaton::{LevenshteinAutomaton, LevenshteinAutomatonBuilder, LevenshteinDfaState};
-use pyo3::prelude::*;
 use std::collections::HashMap;
 
 struct Node {
@@ -7,7 +6,6 @@ struct Node {
     nodes: Vec<(char, Node)>,
 }
 
-#[pyclass(name = "Trie")]
 pub struct Trie {
     automaton_builders: HashMap<u8, LevenshteinAutomatonBuilder>,
     nodes: Vec<(char, Node)>,
@@ -22,22 +20,20 @@ impl Node {
     }
 }
 
-#[pymethods]
 impl Trie {
-    #[new]
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             automaton_builders: HashMap::new(),
             nodes: Vec::new(),
         }
     }
 
-    fn init_automaton(&mut self, d: u8) {
+    pub fn init_automaton(&mut self, d: u8) {
         self.automaton_builders
             .insert(d, LevenshteinAutomatonBuilder::new(d));
     }
 
-    fn add(&mut self, word: String) {
+    pub fn add(&mut self, word: String) {
         let mut nodes = &mut self.nodes;
         let len = word.chars().count();
 
@@ -58,12 +54,12 @@ impl Trie {
         }
     }
 
-    fn delete(&mut self, word: String) {
+    pub fn delete(&mut self, word: String) {
         let mut chars: Vec<char> = word.chars().rev().collect();
         Self::_delete(&mut chars, &mut self.nodes);
     }
 
-    fn search(&self, d: u8, query: String) -> PyResult<Vec<(u16, String)>> {
+    pub fn search(&self, d: u8, query: String) -> Vec<(u16, String)> {
         match self.automaton_builders.get(&d) {
             Some(builder) => {
                 let mut automaton = builder.get(query);
@@ -77,9 +73,9 @@ impl Trie {
                     &state,
                     &mut automaton,
                 );
-                Ok(matches)
+                matches
             }
-            None => Ok(vec![]),
+            None => vec![],
         }
     }
 }

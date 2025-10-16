@@ -11,3 +11,6 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = "0.25.0"
 nohash-hasher = "0.2.0"
+ulid = "1.2.1"
+unicode-segmentation = "1.12.0"
+hashbrown = "0.16.0"

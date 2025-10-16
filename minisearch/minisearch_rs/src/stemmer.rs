@@ -1,4 +1,3 @@
-use pyo3::prelude::*;
 use std::collections::HashMap;
 
 static VOWELS: [char; 6] = ['a', 'e', 'i', 'o', 'u', 'y'];
@@ -26,7 +25,6 @@ static STEP_4_SUFFIXES: [&str; 18] = [
     "ive", "ize", "ion", "al", "er", "ic",
 ];
 
-#[pyclass(name = "SnowballStemmer")]
 pub struct SnowballStemmer {
     r1: usize,
     r2: usize,
@@ -35,10 +33,8 @@ pub struct SnowballStemmer {
     step_3_suffix_map: HashMap<String, String>,
 }
 
-#[pymethods]
 impl SnowballStemmer {
-    #[new]
-    fn new() -> Self {
+    pub fn new() -> Self {
         let pre_stem_exceptions: HashMap<String, String> = HashMap::from([
             (String::from("skis"), String::from("ski")),
             (String::from("skies"), String::from("sky")),
@@ -102,7 +98,7 @@ impl SnowballStemmer {
         }
     }
 
-    fn stem(&mut self, mut word: String) -> String {
+    pub fn stem(&mut self, mut word: String) -> String {
         if word.len() <= 2 || EXCEPTION_WORDS.contains(&word.as_str()) {
             return word;
         }
