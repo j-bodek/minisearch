@@ -1,4 +1,5 @@
 use chumsky::prelude::*;
+use std::str::FromStr;
 
 enum Fuzz {
     Strict(u32),
@@ -17,70 +18,102 @@ pub struct Query {
     slop: u32,
 }
 
-pub fn query<'a>() -> impl Parser<'a, &'a str, Query> {
-    let token = any()
-        .filter(|c: &char| !char::is_whitespace(*c) && *c != '"' && *c != '~')
-        .repeated()
-        .at_least(1)
-        .collect::<String>();
+impl Query {
+    pub fn parse(query: &str) -> ParseResult<Query, Rich<'_, char>> {
+        Self::parser().parse(query)
+    }
 
-    // FUZZ = "~" + DIGITS.optional()
-    let number = text::digits(10)
-        .at_least(1)
-        .collect::<String>()
-        .map(|s| s.parse::<u32>().unwrap());
+    fn map_auto_fuzz(len: usize) -> u32 {
+        match len {
+            _ if len <= 2 => 0,
+            _ if len <= 5 => 1,
+            _ => 2,
+        }
+    }
 
-    let fuzz = just('~').ignore_then(number.or_not().map(|num| match num {
-        Some(v) => Fuzz::Strict(v),
-        None => Fuzz::Auto,
-    }));
+    fn parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Rich<'a, char>>> {
+        // TOKEN = any string that do not contain whitespaces, double quotes or tildas
+        let token = any()
+            .filter(|c: &char| !char::is_whitespace(*c) && *c != '"' && *c != '~')
+            .repeated()
+            .at_least(1)
+            .to_slice();
 
-    // SLOP = "~" + DIGITS
-    let slop = just('~').ignore_then(number);
+        // FUZZ = "~" + optional number
+        let number = text::digits(10)
+            .at_least(1)
+            .to_slice()
+            .map(|s| u32::from_str(s).unwrap());
 
-    // TERM = TOKEN then FUZZ.optional()
-    let term = token.then(fuzz.or_not());
-    let ws = text::whitespace().at_least(1);
+        let fuzz = just('~')
+            .ignore_then(number.or_not().map(|num| match num {
+                Some(v) => Fuzz::Strict(v),
+                None => Fuzz::Auto,
+            }))
+            .validate(|x, e, emitter| {
+                match x {
+                    Fuzz::Strict(v) => {
+                        if v > 2 {
+                            emitter.emit(Rich::custom(
+                                e.span(),
+                                format!("Fuzziness must be less or equal to 2, but it is {}.", v),
+                            ))
+                        }
+                    }
+                    _ => (),
+                };
+                x
+            });
 
-    // PHRASE = quote then repeated terms seperated by whitespace then quote
-    let terms = term
-        .separated_by(ws)
-        .at_least(1)
-        .collect::<Vec<_>>()
-        .map(|v| {
-            v.iter()
-                .map(|val| Term {
-                    text: val.0.clone(),
-                    fuzz: match &val.1 {
-                        Some(x) => match x {
-                            Fuzz::Strict(v) => *v,
-                            Fuzz::Auto => val.0.len() as u32,
+        // SLOP = "~" + DIGITS
+        let slop = just('~').ignore_then(number);
+
+        // TERM = TOKEN then FUZZ.optional()
+        let term = token.then(fuzz.or_not());
+
+        // PHRASE = quote then repeated terms seperated by whitespace then quote
+        let ws = text::whitespace().at_least(1);
+        let terms = term
+            .separated_by(ws)
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .map(|v| {
+                v.into_iter()
+                    .map(|val: (&str, Option<Fuzz>)| Term {
+                        fuzz: match &val.1 {
+                            Some(x) => match x {
+                                Fuzz::Strict(v) => *v,
+                                Fuzz::Auto => Self::map_auto_fuzz(val.0.len()),
+                            },
+                            None => 0,
                         },
-                        None => 0,
-                    },
-                })
-                .collect()
-        });
+                        text: val.0.to_string(),
+                    })
+                    .collect()
+            });
 
-    let phrase = just('"')
-        .ignore_then(terms)
-        .then_ignore(just('"'))
-        .then(slop);
-
-    // QUERY = (PHRASE then SLOP) or repeated terms seperated by whitespace
-    let query = phrase
-        .map(|val| Query {
-            terms: val.0,
-            slop: val.1,
-        })
-        .or(just('"')
-            .or_not()
+        let phrase = just('"')
             .ignore_then(terms)
-            .then_ignore(just('"').or_not())
-            .map(|terms| Query {
+            .then_ignore(just('"'))
+            .then(slop.or_not());
+
+        // QUERY = (PHRASE then SLOP) or repeated terms seperated by whitespace
+        let query = text::whitespace()
+            .ignore_then(phrase)
+            .map(|val| Query {
+                terms: val.0,
+                slop: match val.1 {
+                    Some(v) => v,
+                    _ => 0,
+                },
+            })
+            .or(terms.map(|terms| Query {
                 terms: terms,
                 slop: 0,
-            }));
+            }))
+            .then_ignore(text::whitespace())
+            .then_ignore(end());
 
-    query
+        query
+    }
 }
