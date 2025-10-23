@@ -1,4 +1,6 @@
 use chumsky::prelude::*;
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 use std::str::FromStr;
 
 enum Fuzz {
@@ -19,8 +21,22 @@ pub struct Query {
 }
 
 impl Query {
-    pub fn parse(query: &str) -> ParseResult<Query, Rich<'_, char>> {
-        Self::parser().parse(query)
+    pub fn parse(query: &str) -> Result<Query, PyErr> {
+        let result = Self::parser().parse(query);
+        if result.has_errors() {
+            let errors = result
+                .errors()
+                .map(|e| format!("{:?}", e))
+                .collect::<Vec<String>>()
+                .join("\n");
+
+            return Err(PyValueError::new_err(format!(
+                "Following query is invalid: '{}'\n, {}",
+                query, errors
+            )));
+        }
+
+        return Ok(result.unwrap());
     }
 
     fn map_auto_fuzz(len: usize) -> u32 {
