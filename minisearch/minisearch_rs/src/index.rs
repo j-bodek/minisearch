@@ -72,69 +72,13 @@ impl Index {
     fn search(&self, q: String, top_k: u8) -> PyResult<()> {
         // get slop, trim all of the '"' and white spaces
 
-        let qr = Query::parse(&q);
-        match qr {
+        let query = match Query::parse(&q) {
             Err(e) => return Err(e),
-            _ => (),
+            Ok(q) => q,
         };
 
         Ok(())
-        // let errors = qr
-        //     .errors()
-        //     .map(|e| format!("{:?}", e))
-        //     .collect::<Vec<String>>()
-        //     .join("\n");
 
-        // for err in qr.errors() {
-        //     println!("{:?}, {:?}, {:?}", err, err.span(), err.found());
-        // }
-
-        // let mut quotes: u32 = 0;
-        // let mut slop = String::new();
-        // let mut token = String::new();
-        // let mut fuzziness = String::new();
-        // let mut prev_char = ' ';
-
-        // for c in query.chars() {
-        //     match c {
-        //         '"' => {
-        //             if token.len() > 0 || fuzziness.len() > 0 {
-        //                 println!("token {token}, fuzziness: {fuzziness}");
-        //                 token = String::new();
-        //                 fuzziness = String::new();
-        //             }
-
-        //             quotes += 1;
-        //         }
-        //         ' ' => {
-        //             println!("token {token}, fuzziness: {fuzziness}");
-        //             token = String::new();
-        //             fuzziness = String::new();
-        //         }
-        //         '~' => {}
-        //         c if c.is_digit(10) => {
-        //             if (prev_char == '~' && quotes > 0 && quotes % 2 == 0)
-        //                 || (quotes > 0 && quotes % 2 == 0 && slop.len() > 0)
-        //             {
-        //                 slop.push(c);
-        //             } else if prev_char == '~' || fuzziness.len() > 0 {
-        //                 fuzziness.push(c);
-        //             } else {
-        //                 token.push(c);
-        //             }
-        //         }
-        //         _ => {
-        //             token.push(c);
-        //         }
-        //     }
-
-        //     prev_char = c;
-        // }
-
-        // if token.len() > 0 || fuzziness.len() > 0 {
-        //     println!("token {token}, fuzziness: {fuzziness}");
-        // }
-
-        // println!("slop: {slop}");
+        // Find intersecting documents for a given query
     }
 }
