@@ -250,6 +250,7 @@ class Index:
         docs, indexes, same = [], [], True
         max_scores = []
         pointers = defaultdict(lambda: {"heap": [], "tokens_doc_idx": {}})
+
         query, slop = self._parser.parse_slop(query.lower())
         tokens = list(
             self._tokenizer.tokenize_query(self._parser.parse_fuzziness(query))
