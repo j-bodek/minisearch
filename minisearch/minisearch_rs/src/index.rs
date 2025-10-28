@@ -1,17 +1,17 @@
+use crate::intersect::PostingListIntersection;
 use crate::parser::Query;
 use crate::scoring::term_bm25;
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
-use chumsky::prelude::*;
 use hashbrown::HashMap;
 use pyo3::prelude::*;
 use std::vec::Vec;
 use ulid::{Generator, Ulid};
 
-struct Posting {
-    doc_id: Ulid,
-    positions: Vec<u32>,
-    score: f64,
+pub struct Posting {
+    pub doc_id: Ulid,
+    pub positions: Vec<u32>,
+    pub score: f64,
 }
 
 #[pyclass(name = "Index")]
@@ -78,6 +78,8 @@ impl Index {
         };
 
         let query = self.tokenizer.tokenize_query(query);
+
+        let intersection = PostingListIntersection::new(query, &self.index, &self.fuzzy_trie);
 
         Ok(())
 
