@@ -10,18 +10,19 @@ enum Fuzz {
 
 #[derive(Clone, Debug)]
 pub struct Term<'a> {
-    text: &'a str,
-    fuzz: u32,
+    pub text: &'a str,
+    pub fuzz: u32,
 }
 
 #[derive(Clone, Debug)]
 pub struct Query<'a> {
-    terms: Vec<Term<'a>>,
-    slop: u32,
+    pub terms: Vec<Term<'a>>,
+    pub slop: u32,
 }
 
 impl<'a> Query<'a> {
-    pub fn parse(query: &'a str) -> Result<Query<'a>, PyErr> {
+    pub fn parse(query: &'a mut str) -> Result<Query<'a>, PyErr> {
+        query.make_ascii_lowercase();
         let result = Self::parser().parse(query);
         if result.has_errors() {
             let errors = result

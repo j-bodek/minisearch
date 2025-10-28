@@ -69,16 +69,18 @@ impl Index {
         doc_id.to_string()
     }
 
-    fn search(&self, q: String, top_k: u8) -> PyResult<()> {
+    fn search(&mut self, mut query: String, top_k: u8) -> PyResult<()> {
         // get slop, trim all of the '"' and white spaces
 
-        let query = match Query::parse(&q) {
+        let query = match Query::parse(&mut query) {
             Err(e) => return Err(e),
             Ok(q) => q,
         };
 
+        let query = self.tokenizer.tokenize_query(query);
+
         Ok(())
 
-        // Find intersecting documents for a given query
+        // Find posting list intersection for a given query
     }
 }
