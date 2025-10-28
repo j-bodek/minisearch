@@ -9,19 +9,19 @@ enum Fuzz {
 }
 
 #[derive(Clone, Debug)]
-pub struct Term {
-    text: String,
+pub struct Term<'a> {
+    text: &'a str,
     fuzz: u32,
 }
 
 #[derive(Clone, Debug)]
-pub struct Query {
-    terms: Vec<Term>,
+pub struct Query<'a> {
+    terms: Vec<Term<'a>>,
     slop: u32,
 }
 
-impl Query {
-    pub fn parse(query: &str) -> Result<Query, PyErr> {
+impl<'a> Query<'a> {
+    pub fn parse(query: &'a str) -> Result<Query<'a>, PyErr> {
         let result = Self::parser().parse(query);
         if result.has_errors() {
             let errors = result
@@ -47,7 +47,7 @@ impl Query {
         }
     }
 
-    fn parser<'a>() -> impl Parser<'a, &'a str, Query, extra::Err<Rich<'a, char>>> {
+    fn parser() -> impl Parser<'a, &'a str, Query<'a>, extra::Err<Rich<'a, char>>> {
         // TOKEN = any string that do not contain whitespaces, double quotes or tildas
         let token = any()
             .filter(|c: &char| !char::is_whitespace(*c) && *c != '"' && *c != '~')
@@ -103,7 +103,7 @@ impl Query {
                             },
                             None => 0,
                         },
-                        text: val.0.to_string(),
+                        text: val.0,
                     })
                     .collect()
             });
