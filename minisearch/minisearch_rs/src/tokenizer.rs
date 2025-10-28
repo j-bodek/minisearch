@@ -19,7 +19,7 @@ impl Tokenizer {
         }
     }
 
-    pub fn tokenize_doc(&self, doc: String) -> (u32, HashMap<String, Vec<u32>>) {
+    pub fn tokenize_doc(&mut self, doc: String) -> (u32, HashMap<String, Vec<u32>>) {
         let mut tokens: HashMap<String, Vec<u32>> = HashMap::new();
 
         let mut i = 0;
@@ -27,8 +27,8 @@ impl Tokenizer {
             if STOP_WORDS.contains(&word) {
                 continue;
             }
-
-            tokens.entry_ref(word).or_default().push(i);
+            let word = self.stemmer.stem(word.to_string());
+            tokens.entry_ref(&word).or_default().push(i);
             i += 1;
         }
 

@@ -99,7 +99,7 @@ impl SnowballStemmer {
     }
 
     pub fn stem(&mut self, mut word: String) -> String {
-        if word.len() <= 2 || EXCEPTION_WORDS.contains(&word.as_str()) {
+        if word.len() <= 2 || EXCEPTION_WORDS.contains(&word.as_str()) || !word.is_ascii() {
             return word;
         }
 
