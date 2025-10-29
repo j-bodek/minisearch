@@ -11,12 +11,12 @@ static STOP_WORDS: [&str; 35] = [
 
 pub struct Token {
     pub text: String,
-    pub fuzz: u32,
+    pub fuzz: u8,
 }
 
 pub struct TokenizedQuery {
     pub tokens: Vec<Token>,
-    pub slop: u32,
+    pub slop: u8,
 }
 
 pub struct Tokenizer {

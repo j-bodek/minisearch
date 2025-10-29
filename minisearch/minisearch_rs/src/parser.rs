@@ -4,20 +4,20 @@ use pyo3::prelude::*;
 use std::str::FromStr;
 
 enum Fuzz {
-    Strict(u32),
+    Strict(u8),
     Auto,
 }
 
 #[derive(Clone, Debug)]
 pub struct Term<'a> {
     pub text: &'a str,
-    pub fuzz: u32,
+    pub fuzz: u8,
 }
 
 #[derive(Clone, Debug)]
 pub struct Query<'a> {
     pub terms: Vec<Term<'a>>,
-    pub slop: u32,
+    pub slop: u8,
 }
 
 impl<'a> Query<'a> {
@@ -40,7 +40,7 @@ impl<'a> Query<'a> {
         return Ok(result.unwrap());
     }
 
-    fn map_auto_fuzz(len: usize) -> u32 {
+    fn map_auto_fuzz(len: usize) -> u8 {
         match len {
             _ if len <= 2 => 0,
             _ if len <= 5 => 1,
@@ -60,7 +60,7 @@ impl<'a> Query<'a> {
         let number = text::digits(10)
             .at_least(1)
             .to_slice()
-            .map(|s| u32::from_str(s).unwrap());
+            .map(|s| u8::from_str(s).unwrap());
 
         let fuzz = just('~')
             .ignore_then(number.or_not().map(|num| match num {

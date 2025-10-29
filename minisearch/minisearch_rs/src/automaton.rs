@@ -218,7 +218,7 @@ impl LevenshteinDfa {
 }
 
 impl LevenshteinAutomaton {
-    fn new(query: String, d: u8, dfa: Arc<LevenshteinDfa>) -> Self {
+    fn new(query: &str, d: u8, dfa: Arc<LevenshteinDfa>) -> Self {
         Self {
             characteristic_vector_cache: Self::create_characteristic_vector_cache(&query, d),
             query_len: query.chars().count() as u32,
@@ -346,7 +346,7 @@ impl LevenshteinAutomatonBuilder {
         }
     }
 
-    pub fn get(&self, query: String) -> LevenshteinAutomaton {
+    pub fn get(&self, query: &str) -> LevenshteinAutomaton {
         LevenshteinAutomaton::new(query, self.d, Arc::clone(&self.dfa))
     }
 }

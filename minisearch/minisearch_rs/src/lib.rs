@@ -1,5 +1,6 @@
 pub mod automaton;
 pub mod index;
+pub mod intersect;
 pub mod parser;
 pub mod scoring;
 pub mod stemmer;

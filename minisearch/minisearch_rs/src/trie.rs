@@ -59,7 +59,7 @@ impl Trie {
         Self::_delete(&mut chars, &mut self.nodes);
     }
 
-    pub fn search(&self, d: u8, query: String) -> Vec<(u16, String)> {
+    pub fn search(&self, d: u8, query: &str) -> Vec<(u16, String)> {
         match self.automaton_builders.get(&d) {
             Some(builder) => {
                 let mut automaton = builder.get(query);
