@@ -33,7 +33,7 @@ impl Trie {
             .insert(d, LevenshteinAutomatonBuilder::new(d));
     }
 
-    pub fn add(&mut self, word: String) {
+    pub fn add(&mut self, word: &str) {
         let mut nodes = &mut self.nodes;
         let len = word.chars().count();
 

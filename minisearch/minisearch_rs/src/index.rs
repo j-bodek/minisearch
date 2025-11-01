@@ -52,6 +52,7 @@ impl Index {
         self.documents.insert(doc_id, tokens_num);
 
         for (token, positions) in tokens {
+            self.fuzzy_trie.add(&token);
             let posting = Posting {
                 doc_id: doc_id,
                 score: term_bm25(
@@ -79,7 +80,15 @@ impl Index {
 
         let query = self.tokenizer.tokenize_query(query);
 
-        let intersection = PostingListIntersection::new(query, &self.index, &self.fuzzy_trie);
+        let intersection = match PostingListIntersection::new(query, &self.index, &self.fuzzy_trie)
+        {
+            Some(iter) => iter,
+            _ => return Ok(()),
+        };
+
+        for docs in intersection {
+            println!("{:?}", docs);
+        }
 
         Ok(())
 

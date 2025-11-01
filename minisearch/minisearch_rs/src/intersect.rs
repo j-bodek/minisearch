@@ -2,11 +2,12 @@ use crate::index::Posting;
 use crate::tokenizer::TokenizedQuery;
 use crate::trie::Trie;
 use hashbrown::HashMap;
-use std::cmp::{Ordering, Reverse};
+use std::cmp::{max, Ordering, Reverse};
 use std::collections::BinaryHeap;
 use ulid::Ulid;
 
-struct TokenDocPointer {
+#[derive(Clone, Debug)]
+pub struct TokenDocPointer {
     doc_id: Ulid,
     doc_idx: u32,
     token: String,
@@ -46,7 +47,7 @@ impl<'a> PostingListIntersection<'a> {
         index: &'a HashMap<String, Vec<Posting>>,
         fuzzy_trie: &Trie,
     ) -> Option<Self> {
-        let mut docs: Vec<Vec<TokenDocPointer>> = vec![];
+        let docs: Vec<Vec<TokenDocPointer>> = Vec::with_capacity(query.tokens.len());
         let mut pointers: HashMap<String, BinaryHeap<Reverse<TokenDocPointer>>> = HashMap::new();
 
         for query_token in query.tokens.iter() {
@@ -74,8 +75,8 @@ impl<'a> PostingListIntersection<'a> {
                 return None;
             }
 
-            let (_, doc) = Self::next_docs(index, pointers.get_mut(&query_token.text).unwrap());
-            docs.push(doc);
+            // let (_, doc) = Self::next_docs(index, pointers.get_mut(&query_token.text).unwrap());
+            // docs.push(doc);
         }
 
         Some(Self {
@@ -106,7 +107,7 @@ impl<'a> PostingListIntersection<'a> {
 
             max_score = f64::max(
                 max_score,
-                index.get(&p.0.token).unwrap()[p.0.doc_idx as usize + 1].score,
+                index.get(&p.0.token).unwrap()[p.0.doc_idx as usize].score,
             );
             doc_ids.push(p.0);
         }
@@ -141,5 +142,65 @@ impl<'a> PostingListIntersection<'a> {
         }
 
         return Self::next_docs(index, pointer);
+    }
+}
+
+impl<'a> Iterator for PostingListIntersection<'a> {
+    type Item = Vec<Vec<TokenDocPointer>>;
+    fn next(&mut self) -> Option<Vec<Vec<TokenDocPointer>>> {
+        let mut same = true;
+
+        for (i, query_token) in self.query.tokens.iter().enumerate() {
+            let (_, docs) = Self::next_docs(
+                self.index,
+                self.pointers.get_mut(&query_token.text).unwrap(),
+            );
+
+            if docs.is_empty() {
+                return None;
+            }
+
+            if self.docs.len() <= i {
+                self.docs.push(docs);
+            } else {
+                self.docs[i] = docs;
+            }
+
+            if i != 0 && self.docs[i][0].doc_id != self.docs[i - 1][0].doc_id {
+                same = false;
+            }
+        }
+
+        let mut target_doc = self.docs.iter().max_by(|x, y| x[0].cmp(&y[0])).unwrap()[0].doc_id;
+        for _ in 0..100 {
+            if same {
+                return Some(self.docs.clone());
+            } else {
+                same = true;
+                let cur_target_doc = target_doc.clone();
+                for (i, query_token) in self.query.tokens.iter().enumerate() {
+                    if cur_target_doc != self.docs[i][0].doc_id {
+                        let (_, docs) = Self::geq_docs(
+                            self.index,
+                            self.pointers.get_mut(&query_token.text).unwrap(),
+                            &target_doc,
+                        );
+
+                        if docs.is_empty() {
+                            return None;
+                        }
+
+                        target_doc = max(target_doc, docs[0].doc_id);
+                        self.docs[i] = docs;
+                    }
+
+                    if i != 0 && self.docs[i][0].doc_id != self.docs[i - 1][0].doc_id {
+                        same = false;
+                    }
+                }
+            }
+        }
+
+        return None;
     }
 }
