@@ -74,8 +74,7 @@ impl<'a> PostingListIntersection<'a> {
                 return None;
             }
 
-            let (_, doc) =
-                Self::next_doc_index(index, pointers.get_mut(&query_token.text).unwrap());
+            let (_, doc) = Self::next_docs(index, pointers.get_mut(&query_token.text).unwrap());
             docs.push(doc);
         }
 
@@ -87,7 +86,7 @@ impl<'a> PostingListIntersection<'a> {
         })
     }
 
-    fn next_doc_index(
+    fn next_docs(
         index: &HashMap<String, Vec<Posting>>,
         pointer: &mut BinaryHeap<Reverse<TokenDocPointer>>,
     ) -> (f64, Vec<TokenDocPointer>) {
@@ -113,5 +112,34 @@ impl<'a> PostingListIntersection<'a> {
         }
 
         return (max_score, doc_ids);
+    }
+
+    fn geq_docs(
+        index: &HashMap<String, Vec<Posting>>,
+        pointer: &mut BinaryHeap<Reverse<TokenDocPointer>>,
+        target_doc: &Ulid,
+    ) -> (f64, Vec<TokenDocPointer>) {
+        while !pointer.is_empty() && pointer.peek().unwrap().0.doc_id < *target_doc {
+            let doc = pointer.pop().unwrap();
+            let new_idx = match index
+                .get(&doc.0.token)
+                .unwrap()
+                .binary_search_by(|posting| posting.doc_id.cmp(target_doc))
+            {
+                Ok(idx) => idx,
+                Err(idx) => idx,
+            };
+
+            if new_idx <= index.get(&doc.0.token).unwrap().len() - 1 {
+                pointer.push(Reverse(TokenDocPointer {
+                    doc_id: index.get(&doc.0.token).unwrap()[new_idx].doc_id,
+                    doc_idx: new_idx as u32,
+                    token: doc.0.token.clone(),
+                    distance: doc.0.distance,
+                }))
+            }
+        }
+
+        return Self::next_docs(index, pointer);
     }
 }
