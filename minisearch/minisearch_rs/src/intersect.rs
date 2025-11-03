@@ -8,17 +8,17 @@ use ulid::Ulid;
 
 #[derive(Clone, Debug)]
 pub struct TokenDocPointer {
-    doc_id: Ulid,
-    doc_idx: u32,
-    token: String,
-    distance: u16,
+    pub doc_id: Ulid,
+    pub doc_idx: u32,
+    pub token: String,
+    pub distance: u16,
 }
 
 pub struct PostingListIntersection<'a> {
     query: TokenizedQuery,
     index: &'a HashMap<String, Vec<Posting>>,
     docs: Vec<Vec<TokenDocPointer>>,
-    pointers: HashMap<String, BinaryHeap<Reverse<TokenDocPointer>>>,
+    pointers: Vec<BinaryHeap<Reverse<TokenDocPointer>>>,
 }
 
 impl Ord for TokenDocPointer {
@@ -48,9 +48,10 @@ impl<'a> PostingListIntersection<'a> {
         fuzzy_trie: &Trie,
     ) -> Option<Self> {
         let docs: Vec<Vec<TokenDocPointer>> = Vec::with_capacity(query.tokens.len());
-        let mut pointers: HashMap<String, BinaryHeap<Reverse<TokenDocPointer>>> = HashMap::new();
+        let mut pointers: Vec<BinaryHeap<Reverse<TokenDocPointer>>> =
+            vec![BinaryHeap::new(); query.tokens.len()];
 
-        for query_token in query.tokens.iter() {
+        for (i, query_token) in query.tokens.iter().enumerate() {
             for (distance, token) in fuzzy_trie.search(query_token.fuzz, &query_token.text) {
                 if query_token.text != token
                     && (token.len() <= query_token.fuzz as usize
@@ -65,13 +66,10 @@ impl<'a> PostingListIntersection<'a> {
                     token: token,
                     distance: distance,
                 };
-                pointers
-                    .entry_ref(query_token.text.as_str())
-                    .or_default()
-                    .push(Reverse(pointer));
+                pointers[i].push(Reverse(pointer));
             }
 
-            if !pointers.contains_key(&query_token.text) {
+            if pointers[i].is_empty() {
                 return None;
             }
 
@@ -150,11 +148,8 @@ impl<'a> Iterator for PostingListIntersection<'a> {
     fn next(&mut self) -> Option<Vec<Vec<TokenDocPointer>>> {
         let mut same = true;
 
-        for (i, query_token) in self.query.tokens.iter().enumerate() {
-            let (_, docs) = Self::next_docs(
-                self.index,
-                self.pointers.get_mut(&query_token.text).unwrap(),
-            );
+        for i in 0..self.query.tokens.len() {
+            let (_, docs) = Self::next_docs(self.index, &mut self.pointers[i]);
 
             if docs.is_empty() {
                 return None;
@@ -172,19 +167,16 @@ impl<'a> Iterator for PostingListIntersection<'a> {
         }
 
         let mut target_doc = self.docs.iter().max_by(|x, y| x[0].cmp(&y[0])).unwrap()[0].doc_id;
-        for _ in 0..100 {
+        loop {
             if same {
                 return Some(self.docs.clone());
             } else {
                 same = true;
                 let cur_target_doc = target_doc.clone();
-                for (i, query_token) in self.query.tokens.iter().enumerate() {
+                for i in 0..self.query.tokens.len() {
                     if cur_target_doc != self.docs[i][0].doc_id {
-                        let (_, docs) = Self::geq_docs(
-                            self.index,
-                            self.pointers.get_mut(&query_token.text).unwrap(),
-                            &target_doc,
-                        );
+                        let (_, docs) =
+                            Self::geq_docs(self.index, &mut self.pointers[i], &target_doc);
 
                         if docs.is_empty() {
                             return None;
@@ -200,7 +192,5 @@ impl<'a> Iterator for PostingListIntersection<'a> {
                 }
             }
         }
-
-        return None;
     }
 }
