@@ -48,12 +48,12 @@ struct TokenGroupIterator<'a> {
     tokens: Vec<TokenPositions<'a>>,
 }
 
-struct MinimalIntervalSemanticMatch<'a> {
-    index: &'a HashMap<String, Vec<Posting>>,
-    min_slop: u8,
+pub struct MinimalIntervalSemanticMatch<'a> {
+    min_slop: i32,
     iterators: Vec<TokenGroupIterator<'a>>,
     window: Vec<u32>, // window of token indexes
     slops: Vec<i32>,
+    end: bool,
 }
 
 impl<'a> TokenGroupIterator<'a> {
@@ -136,10 +136,10 @@ impl<'a> TokenGroupIterator<'a> {
 }
 
 impl<'a> MinimalIntervalSemanticMatch<'a> {
-    fn new(
+    pub fn new(
         index: &'a HashMap<String, Vec<Posting>>,
         pointers: Vec<Vec<TokenDocPointer>>,
-        min_slop: u8,
+        min_slop: i32,
     ) -> Self {
         let mut iterators: Vec<TokenGroupIterator> = vec![];
         for group in pointers {
@@ -164,20 +164,61 @@ impl<'a> MinimalIntervalSemanticMatch<'a> {
         let slops = vec![0; iterators.len()];
 
         Self {
-            index: index,
             min_slop: min_slop,
             iterators: iterators,
             window: window,
             slops: slops,
+            end: false,
         }
     }
 }
 
 // TODO
 impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
-    type Item = ();
+    type Item = (i32, Vec<(u32, String, u64, u16)>);
 
-    fn next(&mut self) -> Option<()> {
-        Some(())
+    fn next(&mut self) -> Option<(i32, Vec<(u32, String, u64, u16)>)> {
+        let idx = 1;
+        while !self.end {
+            while idx <= self.iterators.len() - 1 {
+                let val = match self.iterators[idx].closest(self.window[idx - 1]) {
+                    Some(val) => val,
+                    None => return None,
+                };
+
+                self.window[idx] = val;
+                let slop = self.slops[idx - 1]
+                    + (self.window[idx - 1] as i32 - (self.window[idx] as i32 - 1)).abs();
+
+                if slop > self.min_slop {
+                    break;
+                }
+
+                self.slops[idx] = slop;
+            }
+
+            let mut result = None;
+            if idx == self.iterators.len() - 1 {
+                let mut window = vec![];
+                for (iter_idx, token_idx) in self.window.iter().enumerate() {
+                    let meta = self.iterators[iter_idx].last_meta().unwrap();
+                    window.push((*token_idx, meta.token, meta.tfs, meta.distance));
+                }
+
+                let _ = result.insert((self.slops[self.iterators.len() - 1], window));
+            }
+
+            match self.iterators[0].next() {
+                Some(val) => self.window[0] = val,
+                None => self.end = true,
+            };
+
+            match result {
+                Some(res) => return Some(res),
+                _ => (),
+            }
+        }
+
+        None
     }
 }
