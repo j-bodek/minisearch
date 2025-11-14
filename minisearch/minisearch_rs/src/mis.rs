@@ -1,18 +1,21 @@
+use crate::index::Posting;
+use crate::intersect::TokenDocPointer;
 use core::cmp::Ordering;
+use hashbrown::HashMap;
 use std::collections::BinaryHeap;
 use std::slice::Iter;
 
 struct TokenPositions<'a> {
     token: String,
-    distance: u32,
-    tfs: f64,
+    distance: u16,
+    tfs: u64,
     positions: Iter<'a, u32>,
 }
 
 struct TokenMeta {
     token: String,
-    distance: u32,
-    tfs: f64,
+    distance: u16,
+    tfs: u64,
 }
 
 struct TokenPosition {
@@ -46,8 +49,10 @@ struct TokenGroupIterator<'a> {
 }
 
 struct MinimalIntervalSemanticMatch<'a> {
+    index: &'a HashMap<String, Vec<Posting>>,
+    min_slop: u8,
     iterators: Vec<TokenGroupIterator<'a>>,
-    window: Vec<usize>, // window of token indexes
+    window: Vec<u32>, // window of token indexes
     slops: Vec<i32>,
 }
 
@@ -59,13 +64,7 @@ impl<'a> TokenGroupIterator<'a> {
         }
     }
 
-    fn add_token_positions(
-        &mut self,
-        token: String,
-        distance: u32,
-        tfs: f64,
-        mut positions: Iter<'a, u32>,
-    ) {
+    fn add_token_positions(&mut self, mut positions: Iter<'a, u32>, token: String, distance: u16) {
         match positions.next() {
             Some(val) => {
                 self.heap.push(TokenPosition {
@@ -75,7 +74,7 @@ impl<'a> TokenGroupIterator<'a> {
                 self.tokens.push(TokenPositions {
                     token: token,
                     distance: distance,
-                    tfs: tfs,
+                    tfs: positions.len() as u64,
                     positions: positions,
                 });
             }
@@ -133,5 +132,52 @@ impl<'a> TokenGroupIterator<'a> {
         }
 
         return None;
+    }
+}
+
+impl<'a> MinimalIntervalSemanticMatch<'a> {
+    fn new(
+        index: &'a HashMap<String, Vec<Posting>>,
+        pointers: Vec<Vec<TokenDocPointer>>,
+        min_slop: u8,
+    ) -> Self {
+        let mut iterators: Vec<TokenGroupIterator> = vec![];
+        for group in pointers {
+            let mut iterator = TokenGroupIterator::new();
+            for pointer in group {
+                iterator.add_token_positions(
+                    index.get(&pointer.token).unwrap()[pointer.doc_idx as usize]
+                        .positions
+                        .iter(),
+                    pointer.token,
+                    pointer.distance,
+                );
+            }
+
+            iterators.push(iterator);
+        }
+
+        let window = (0..iterators.len())
+            .map(|i| iterators[i].peek().unwrap())
+            .collect::<Vec<u32>>();
+
+        let slops = vec![0; iterators.len()];
+
+        Self {
+            index: index,
+            min_slop: min_slop,
+            iterators: iterators,
+            window: window,
+            slops: slops,
+        }
+    }
+}
+
+// TODO
+impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
+    type Item = ();
+
+    fn next(&mut self) -> Option<()> {
+        Some(())
     }
 }
