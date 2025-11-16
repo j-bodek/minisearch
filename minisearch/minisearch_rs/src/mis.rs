@@ -178,7 +178,7 @@ impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
     type Item = (i32, Vec<(u32, String, u64, u16)>);
 
     fn next(&mut self) -> Option<(i32, Vec<(u32, String, u64, u16)>)> {
-        let idx = 1;
+        let mut idx = 1;
         while !self.end {
             while idx <= self.iterators.len() - 1 {
                 let val = match self.iterators[idx].closest(self.window[idx - 1]) {
@@ -195,10 +195,11 @@ impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
                 }
 
                 self.slops[idx] = slop;
+                idx += 1;
             }
 
             let mut result = None;
-            if idx == self.iterators.len() - 1 {
+            if idx == self.iterators.len() {
                 let mut window = vec![];
                 for (iter_idx, token_idx) in self.window.iter().enumerate() {
                     let meta = self.iterators[iter_idx].last_meta().unwrap();
