@@ -43,6 +43,20 @@ impl PartialEq for TokenPosition {
 
 impl Eq for TokenPosition {}
 
+#[derive(Debug)]
+pub struct MisTokenIdx {
+    pub token: String,
+    pub token_idx: u32,
+    pub tfs: u64,
+    pub distance: u16,
+}
+
+#[derive(Debug)]
+pub struct MisResult {
+    pub slop: i32,
+    pub indexes: Vec<MisTokenIdx>,
+}
+
 struct TokenGroupIterator<'a> {
     heap: BinaryHeap<TokenPosition>,
     tokens: Vec<TokenPositions<'a>>,
@@ -175,9 +189,9 @@ impl<'a> MinimalIntervalSemanticMatch<'a> {
 
 // TODO
 impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
-    type Item = (i32, Vec<(u32, String, u64, u16)>);
+    type Item = MisResult;
 
-    fn next(&mut self) -> Option<(i32, Vec<(u32, String, u64, u16)>)> {
+    fn next(&mut self) -> Option<MisResult> {
         let mut idx = 1;
         while !self.end {
             while idx <= self.iterators.len() - 1 {
@@ -206,7 +220,18 @@ impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
                     window.push((*token_idx, meta.token, meta.tfs, meta.distance));
                 }
 
-                let _ = result.insert((self.slops[self.iterators.len() - 1], window));
+                let _ = result.insert(MisResult {
+                    slop: self.slops[self.iterators.len() - 1],
+                    indexes: window
+                        .into_iter()
+                        .map(|(token_idx, token, tfs, distance)| MisTokenIdx {
+                            token: token,
+                            token_idx: token_idx,
+                            tfs: tfs,
+                            distance: distance,
+                        })
+                        .collect::<Vec<MisTokenIdx>>(),
+                });
             }
 
             match self.iterators[0].next() {

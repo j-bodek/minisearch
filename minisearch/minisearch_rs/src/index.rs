@@ -1,4 +1,5 @@
 use crate::intersect::PostingListIntersection;
+use crate::mis::MinimalIntervalSemanticMatch;
 use crate::parser::Query;
 use crate::scoring::term_bm25;
 use crate::tokenizer::Tokenizer;
@@ -78,6 +79,7 @@ impl Index {
             Ok(q) => q,
         };
 
+        let slop = query.slop;
         let query = self.tokenizer.tokenize_query(query);
 
         let intersection = match PostingListIntersection::new(query, &self.index, &self.fuzzy_trie)
@@ -86,8 +88,10 @@ impl Index {
             _ => return Ok(()),
         };
 
-        for docs in intersection {
-            println!("{:?}", docs);
+        for pointers in intersection {
+            for m in MinimalIntervalSemanticMatch::new(&self.index, pointers, slop as i32) {
+                println!("{:?}", m);
+            }
         }
 
         Ok(())
