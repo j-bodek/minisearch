@@ -1,7 +1,7 @@
 use crate::intersect::PostingListIntersection;
 use crate::mis::MinimalIntervalSemanticMatch;
 use crate::parser::Query;
-use crate::scoring::term_bm25;
+use crate::scoring::{bm25, term_bm25};
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use hashbrown::HashMap;
@@ -60,7 +60,7 @@ impl Index {
                     positions.len() as u64,
                     self.documents.len() as u64,
                     self.index.entry_ref(&token).or_default().len() as u64 + 1,
-                    tokens_num as u64,
+                    tokens_num,
                     self.avg_doc_len,
                 ),
                 positions: positions,
@@ -89,8 +89,18 @@ impl Index {
         };
 
         for pointers in intersection {
-            for m in MinimalIntervalSemanticMatch::new(&self.index, pointers, slop as i32) {
-                println!("{:?}", m);
+            let doc_id = pointers[0][0].doc_id;
+            for mis_result in MinimalIntervalSemanticMatch::new(&self.index, pointers, slop as i32)
+            {
+                let score = bm25(
+                    self.documents.len() as u64,
+                    *self.documents.get(&doc_id).unwrap_or(&0),
+                    self.avg_doc_len,
+                    &self.index,
+                    mis_result,
+                );
+
+                println!("doc_id: {}, score: {}", doc_id, score);
             }
         }
 

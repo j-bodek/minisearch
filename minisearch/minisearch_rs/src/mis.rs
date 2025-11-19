@@ -4,7 +4,6 @@ use core::cmp::Ordering;
 use hashbrown::HashMap;
 use std::collections::BinaryHeap;
 use std::slice::Iter;
-use ulid::Ulid;
 
 struct TokenPositions<'a> {
     token: String,
@@ -54,7 +53,6 @@ pub struct MisTokenIdx {
 
 #[derive(Debug)]
 pub struct MisResult {
-    pub doc_id: Ulid,
     pub slop: i32,
     pub indexes: Vec<MisTokenIdx>,
 }
@@ -65,7 +63,6 @@ struct TokenGroupIterator<'a> {
 }
 
 pub struct MinimalIntervalSemanticMatch<'a> {
-    doc_id: Ulid,
     min_slop: i32,
     iterators: Vec<TokenGroupIterator<'a>>,
     window: Vec<u32>, // window of token indexes
@@ -158,7 +155,6 @@ impl<'a> MinimalIntervalSemanticMatch<'a> {
         pointers: Vec<Vec<TokenDocPointer>>,
         min_slop: i32,
     ) -> Self {
-        let doc_id = pointers[0][0].doc_id;
         let mut iterators: Vec<TokenGroupIterator> = Vec::with_capacity(pointers.len());
         for group in pointers {
             let mut iterator = TokenGroupIterator::new();
@@ -182,7 +178,6 @@ impl<'a> MinimalIntervalSemanticMatch<'a> {
         let slops = vec![0; iterators.len()];
 
         Self {
-            doc_id: doc_id,
             min_slop: min_slop,
             iterators: iterators,
             window: window,
@@ -226,7 +221,6 @@ impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
                 }
 
                 let _ = result.insert(MisResult {
-                    doc_id: self.doc_id,
                     slop: self.slops[self.iterators.len() - 1],
                     indexes: window
                         .into_iter()
