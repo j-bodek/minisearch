@@ -95,7 +95,5 @@ impl Index {
         }
 
         Ok(())
-
-        // Find posting list intersection for a given query
     }
 }

@@ -4,18 +4,19 @@ use core::cmp::Ordering;
 use hashbrown::HashMap;
 use std::collections::BinaryHeap;
 use std::slice::Iter;
+use ulid::Ulid;
 
 struct TokenPositions<'a> {
     token: String,
     distance: u16,
-    tfs: u64,
+    tf: u64,
     positions: Iter<'a, u32>,
 }
 
 struct TokenMeta {
     token: String,
     distance: u16,
-    tfs: u64,
+    tf: u64,
 }
 
 struct TokenPosition {
@@ -47,12 +48,13 @@ impl Eq for TokenPosition {}
 pub struct MisTokenIdx {
     pub token: String,
     pub token_idx: u32,
-    pub tfs: u64,
+    pub tf: u64,
     pub distance: u16,
 }
 
 #[derive(Debug)]
 pub struct MisResult {
+    pub doc_id: Ulid,
     pub slop: i32,
     pub indexes: Vec<MisTokenIdx>,
 }
@@ -63,6 +65,7 @@ struct TokenGroupIterator<'a> {
 }
 
 pub struct MinimalIntervalSemanticMatch<'a> {
+    doc_id: Ulid,
     min_slop: i32,
     iterators: Vec<TokenGroupIterator<'a>>,
     window: Vec<u32>, // window of token indexes
@@ -88,7 +91,7 @@ impl<'a> TokenGroupIterator<'a> {
                 self.tokens.push(TokenPositions {
                     token: token,
                     distance: distance,
-                    tfs: positions.len() as u64,
+                    tf: positions.len() as u64,
                     positions: positions,
                 });
             }
@@ -141,7 +144,7 @@ impl<'a> TokenGroupIterator<'a> {
             return Some(TokenMeta {
                 token: token.token.clone(),
                 distance: token.distance,
-                tfs: token.tfs,
+                tf: token.tf,
             });
         }
 
@@ -155,7 +158,8 @@ impl<'a> MinimalIntervalSemanticMatch<'a> {
         pointers: Vec<Vec<TokenDocPointer>>,
         min_slop: i32,
     ) -> Self {
-        let mut iterators: Vec<TokenGroupIterator> = vec![];
+        let doc_id = pointers[0][0].doc_id;
+        let mut iterators: Vec<TokenGroupIterator> = Vec::with_capacity(pointers.len());
         for group in pointers {
             let mut iterator = TokenGroupIterator::new();
             for pointer in group {
@@ -178,6 +182,7 @@ impl<'a> MinimalIntervalSemanticMatch<'a> {
         let slops = vec![0; iterators.len()];
 
         Self {
+            doc_id: doc_id,
             min_slop: min_slop,
             iterators: iterators,
             window: window,
@@ -217,17 +222,18 @@ impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
                 let mut window = vec![];
                 for (iter_idx, token_idx) in self.window.iter().enumerate() {
                     let meta = self.iterators[iter_idx].last_meta().unwrap();
-                    window.push((*token_idx, meta.token, meta.tfs, meta.distance));
+                    window.push((*token_idx, meta.token, meta.tf, meta.distance));
                 }
 
                 let _ = result.insert(MisResult {
+                    doc_id: self.doc_id,
                     slop: self.slops[self.iterators.len() - 1],
                     indexes: window
                         .into_iter()
-                        .map(|(token_idx, token, tfs, distance)| MisTokenIdx {
+                        .map(|(token_idx, token, tf, distance)| MisTokenIdx {
                             token: token,
                             token_idx: token_idx,
-                            tfs: tfs,
+                            tf: tf,
                             distance: distance,
                         })
                         .collect::<Vec<MisTokenIdx>>(),
