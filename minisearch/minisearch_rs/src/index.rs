@@ -6,6 +6,8 @@ use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use hashbrown::HashMap;
 use pyo3::prelude::*;
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
 use std::vec::Vec;
 use ulid::{Generator, Ulid};
 
@@ -15,10 +17,40 @@ pub struct Posting {
     pub score: f64,
 }
 
+pub struct Document {
+    pub tokens_num: u32,
+    pub content: String,
+}
+
+pub struct Result {
+    pub doc_id: Ulid,
+    pub score: f64,
+}
+
+impl Ord for Result {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score.total_cmp(&other.score)
+    }
+}
+
+impl PartialOrd for Result {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.score.total_cmp(&other.score))
+    }
+}
+
+impl PartialEq for Result {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score
+    }
+}
+
+impl Eq for Result {}
+
 #[pyclass(name = "Index")]
 pub struct Index {
     index: HashMap<String, Vec<Posting>>,
-    documents: HashMap<Ulid, u32>,
+    documents: HashMap<Ulid, Document>,
     ulid_generator: Generator,
     tokenizer: Tokenizer,
     fuzzy_trie: Trie,
@@ -46,11 +78,17 @@ impl Index {
 
     fn add(&mut self, doc: String) -> String {
         let doc_id = self.ulid_generator.generate().unwrap();
-        let (tokens_num, tokens) = self.tokenizer.tokenize_doc(doc);
+        let (tokens_num, tokens) = self.tokenizer.tokenize_doc(doc.clone());
 
         self.avg_doc_len = (self.avg_doc_len * self.documents.len() as f64 + tokens_num as f64)
             / (self.documents.len() as f64 + 1.0);
-        self.documents.insert(doc_id, tokens_num);
+        self.documents.insert(
+            doc_id,
+            Document {
+                tokens_num: tokens_num,
+                content: doc,
+            },
+        );
 
         for (token, positions) in tokens {
             self.fuzzy_trie.add(&token);
@@ -71,9 +109,7 @@ impl Index {
         doc_id.to_string()
     }
 
-    fn search(&mut self, mut query: String, top_k: u8) -> PyResult<()> {
-        // get slop, trim all of the '"' and white spaces
-
+    fn search(&mut self, mut query: String, top_k: u8) -> PyResult<Vec<(f64, String, String)>> {
         let query = match Query::parse(&mut query) {
             Err(e) => return Err(e),
             Ok(q) => q,
@@ -85,25 +121,51 @@ impl Index {
         let intersection = match PostingListIntersection::new(query, &self.index, &self.fuzzy_trie)
         {
             Some(iter) => iter,
-            _ => return Ok(()),
+            _ => return Ok(vec![]),
         };
 
+        let mut results = BinaryHeap::with_capacity(top_k as usize);
+
         for pointers in intersection {
-            let doc_id = pointers[0][0].doc_id;
+            let (doc_id, mut score) = (pointers[0][0].doc_id, 0.0);
             for mis_result in MinimalIntervalSemanticMatch::new(&self.index, pointers, slop as i32)
             {
-                let score = bm25(
+                score = bm25(
                     self.documents.len() as u64,
-                    *self.documents.get(&doc_id).unwrap_or(&0),
+                    self.documents.get(&doc_id).unwrap().tokens_num,
                     self.avg_doc_len,
                     &self.index,
                     mis_result,
-                );
+                )
+                .max(score);
+            }
 
-                println!("doc_id: {}, score: {}", doc_id, score);
+            if score > 0.0 {
+                if top_k == 0 || results.len() < top_k as usize {
+                    results.push(Reverse(Result {
+                        doc_id: doc_id,
+                        score: score,
+                    }));
+                } else if results.peek().unwrap().0.score < score {
+                    let _ = results.pop();
+                    results.push(Reverse(Result {
+                        doc_id: doc_id,
+                        score: score,
+                    }));
+                }
             }
         }
 
-        Ok(())
+        Ok(results
+            .into_sorted_vec()
+            .into_iter()
+            .map(|r| {
+                (
+                    r.0.score,
+                    r.0.doc_id.to_string(),
+                    self.documents.get(&r.0.doc_id).unwrap().content.clone(),
+                )
+            })
+            .collect())
     }
 }
