@@ -16,7 +16,7 @@ pub fn term_bm25(
     avg_doc_length: f64,
 ) -> f64 {
     let idf =
-        (((docs_num - token_docs_num) as f64 + EPS) / (token_docs_num as f64 + EPS)).ln() + 1.0;
+        (((docs_num - token_docs_num) as f64 + EPS) / (token_docs_num as f64 + EPS) + 1.0).ln();
 
     idf * ((tf as f64 * (K + 1.0))
         / (tf as f64 + K * (1.0 - B + B * (doc_length as f64 / avg_doc_length))))

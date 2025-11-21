@@ -88,7 +88,7 @@ impl<'a> TokenGroupIterator<'a> {
                 self.tokens.push(TokenPositions {
                     token: token,
                     distance: distance,
-                    tf: positions.len() as u64,
+                    tf: positions.len() as u64 + 1,
                     positions: positions,
                 });
             }
