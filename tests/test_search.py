@@ -1,6 +1,9 @@
+import re
 import json
 import pytest
-from minisearch import MiniSearch
+
+# from minisearch import MiniSearch
+from minisearch import MiniSearchRs as MiniSearch
 
 
 @pytest.fixture
@@ -23,10 +26,15 @@ def queries():
 
 @pytest.fixture
 def results():
-    with open("tests/assets/results_1k_ordered2.json", "r+") as f:
+    with open("tests/assets/results_1k.json", "r+") as f:
         data = json.load(f)
 
     return data
+
+
+def rust_query(query, fuzzy, slop):
+    query = re.sub("[^A-Za-z0-9\\s]+", "", query)
+    return '"' + " ".join([f"{t}~{fuzzy}" for t in query.lower().split()]) + f'"~{slop}'
 
 
 def test_performance(data, queries, results):
@@ -43,10 +51,14 @@ def test_performance(data, queries, results):
         top_k = None
         for q in queries:
             query_results = []
+            # for r in search.index("wikipedia").search(
+            #     q, slop=slop, fuzzy=fuzzy, top_k=top_k, score=score
+            # ):
             for r in search.index("wikipedia").search(
-                q, slop=slop, fuzzy=fuzzy, top_k=top_k, score=score
+                rust_query(q, fuzzy, slop), top_k=0
             ):
-                r = r["content"][:100]
+                # r = r["content"][:100]
+                r = r[2][:100]
                 assert r in results.get(
                     q, []
                 ), f"Slop: {slop}, fuzzy: {fuzzy}, top-k: {top_k}, score: {score} Result: {r} was returned for query: {q} but isn't present in defined results"
