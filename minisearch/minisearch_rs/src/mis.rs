@@ -1,6 +1,6 @@
 use crate::index::Posting;
 use crate::intersect::TokenDocPointer;
-use core::cmp::Ordering;
+use core::cmp::{Ordering, Reverse};
 use hashbrown::HashMap;
 use std::collections::BinaryHeap;
 use std::slice::Iter;
@@ -58,7 +58,7 @@ pub struct MisResult {
 }
 
 struct TokenGroupIterator<'a> {
-    heap: BinaryHeap<TokenPosition>,
+    heap: BinaryHeap<Reverse<TokenPosition>>,
     tokens: Vec<TokenPositions<'a>>,
 }
 
@@ -81,10 +81,10 @@ impl<'a> TokenGroupIterator<'a> {
     fn add_token_positions(&mut self, mut positions: Iter<'a, u32>, token: String, distance: u16) {
         match positions.next() {
             Some(val) => {
-                self.heap.push(TokenPosition {
+                self.heap.push(Reverse(TokenPosition {
                     position: *val,
                     idx: self.tokens.len(),
-                });
+                }));
                 self.tokens.push(TokenPositions {
                     token: token,
                     distance: distance,
@@ -97,14 +97,14 @@ impl<'a> TokenGroupIterator<'a> {
     }
 
     fn closest(&mut self, target: u32) -> Option<u32> {
-        while !self.heap.is_empty() && self.heap.peek().unwrap().position <= target {
+        while !self.heap.is_empty() && self.heap.peek().unwrap().0.position <= target {
             let pos = self.heap.pop().unwrap();
-            while let Some(val) = self.tokens[pos.idx].positions.next() {
+            while let Some(val) = self.tokens[pos.0.idx].positions.next() {
                 if *val > target {
-                    self.heap.push(TokenPosition {
+                    self.heap.push(Reverse(TokenPosition {
                         position: *val,
-                        idx: pos.idx,
-                    });
+                        idx: pos.0.idx,
+                    }));
                     break;
                 }
             }
@@ -116,11 +116,11 @@ impl<'a> TokenGroupIterator<'a> {
     fn next(&mut self) -> Option<u32> {
         if !self.heap.is_empty() {
             let pos = self.heap.pop().unwrap();
-            if let Some(val) = self.tokens[pos.idx].positions.next() {
-                self.heap.push(TokenPosition {
+            if let Some(val) = self.tokens[pos.0.idx].positions.next() {
+                self.heap.push(Reverse(TokenPosition {
                     position: *val,
-                    idx: pos.idx,
-                });
+                    idx: pos.0.idx,
+                }));
             }
         }
 
@@ -129,7 +129,7 @@ impl<'a> TokenGroupIterator<'a> {
 
     fn peek(&self) -> Option<u32> {
         if !self.heap.is_empty() {
-            return Some(self.heap.peek().unwrap().position);
+            return Some(self.heap.peek().unwrap().0.position);
         }
 
         return None;
@@ -137,7 +137,7 @@ impl<'a> TokenGroupIterator<'a> {
 
     fn last_meta(&self) -> Option<TokenMeta> {
         if !self.heap.is_empty() {
-            let token = &self.tokens[self.heap.peek().unwrap().idx];
+            let token = &self.tokens[self.heap.peek().unwrap().0.idx];
             return Some(TokenMeta {
                 token: token.token.clone(),
                 distance: token.distance,
@@ -235,7 +235,10 @@ impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
             }
 
             match self.iterators[0].next() {
-                Some(val) => self.window[0] = val,
+                Some(val) => {
+                    idx = 1;
+                    self.window[0] = val
+                }
                 None => self.end = true,
             };
 

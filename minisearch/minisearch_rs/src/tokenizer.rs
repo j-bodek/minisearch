@@ -1,6 +1,7 @@
 use crate::parser::Query;
 use crate::stemmer::SnowballStemmer;
 use hashbrown::HashMap;
+use regex::Regex;
 use unicode_segmentation::UnicodeSegmentation;
 
 static STOP_WORDS: [&str; 35] = [
@@ -9,6 +10,7 @@ static STOP_WORDS: [&str; 35] = [
     "they", "this", "to", "was", "will", "with", "www",
 ];
 
+#[derive(Debug)]
 pub struct Token {
     pub text: String,
     pub fuzz: u8,
@@ -35,7 +37,11 @@ impl Tokenizer {
         let mut tokens: HashMap<String, Vec<u32>> = HashMap::new();
 
         let mut i = 0;
-        for word in doc.unicode_words() {
+        // TODO: back to unicode words
+        // for word in doc.unicode_words() {
+        let re = Regex::new(r"[^A-Za-z0-9\s]+").unwrap();
+        let cleaned = re.replace_all(&doc, "").to_lowercase();
+        for word in cleaned.split_whitespace() {
             if STOP_WORDS.contains(&word) {
                 continue;
             }
@@ -48,6 +54,7 @@ impl Tokenizer {
     }
 
     pub fn tokenize_query(&mut self, query: Query) -> TokenizedQuery {
+        // TODO: unicode segmentation for query?
         let mut tokens: Vec<Token> = Vec::with_capacity(query.terms.len());
 
         for term in query.terms {
