@@ -1,7 +1,6 @@
 use crate::parser::Query;
 use crate::stemmer::SnowballStemmer;
 use hashbrown::HashMap;
-use regex::Regex;
 use unicode_segmentation::UnicodeSegmentation;
 
 static STOP_WORDS: [&str; 35] = [
@@ -37,11 +36,7 @@ impl Tokenizer {
         let mut tokens: HashMap<String, Vec<u32>> = HashMap::new();
 
         let mut i = 0;
-        // TODO: back to unicode words
-        // for word in doc.unicode_words() {
-        let re = Regex::new(r"[^A-Za-z0-9\s]+").unwrap();
-        let cleaned = re.replace_all(&doc, "").to_lowercase();
-        for word in cleaned.split_whitespace() {
+        for word in doc.unicode_words() {
             if STOP_WORDS.contains(&word) {
                 continue;
             }
