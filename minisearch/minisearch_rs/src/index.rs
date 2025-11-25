@@ -5,6 +5,7 @@ use crate::scoring::{bm25, term_bm25};
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use hashbrown::HashMap;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -107,6 +108,41 @@ impl Index {
         }
 
         doc_id.to_string()
+    }
+
+    fn delete(&mut self, id: String) -> PyResult<bool> {
+        let id = match Ulid::from_string(&id) {
+            Ok(val) => val,
+            Err(e) => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid ULID: {}",
+                    e.to_string()
+                )))
+            }
+        };
+
+        let doc = match self.documents.remove(&id) {
+            Some(d) => d,
+            _ => return Ok(true),
+        };
+
+        let (_, tokens) = self.tokenizer.tokenize_doc(doc.content.clone());
+        for (token, _) in tokens {
+            let docs = self.index.get_mut(&token).unwrap();
+            match docs.binary_search_by(|p| p.doc_id.cmp(&id)) {
+                Ok(idx) => {
+                    docs.remove(idx);
+                }
+                _ => (),
+            };
+
+            if docs.len() == 0 {
+                self.index.remove(&token);
+                self.fuzzy_trie.delete(token);
+            }
+        }
+
+        Ok(true)
     }
 
     fn search(&mut self, mut query: String, top_k: u8) -> PyResult<Vec<(f64, String, String)>> {
