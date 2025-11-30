@@ -6,14 +6,14 @@ use std::collections::BinaryHeap;
 use std::slice::Iter;
 
 struct TokenPositions<'a> {
-    token: String,
+    token: u32,
     distance: u16,
     tf: u64,
     positions: Iter<'a, u32>,
 }
 
 struct TokenMeta {
-    token: String,
+    token: u32,
     distance: u16,
     tf: u64,
 }
@@ -45,7 +45,7 @@ impl Eq for TokenPosition {}
 
 #[derive(Debug)]
 pub struct MisTokenIdx {
-    pub token: String,
+    pub token: u32,
     pub token_idx: u32,
     pub tf: u64,
     pub distance: u16,
@@ -78,7 +78,7 @@ impl<'a> TokenGroupIterator<'a> {
         }
     }
 
-    fn add_token_positions(&mut self, mut positions: Iter<'a, u32>, token: String, distance: u16) {
+    fn add_token_positions(&mut self, mut positions: Iter<'a, u32>, token: u32, distance: u16) {
         match positions.next() {
             Some(val) => {
                 self.heap.push(Reverse(TokenPosition {
@@ -151,7 +151,7 @@ impl<'a> TokenGroupIterator<'a> {
 
 impl<'a> MinimalIntervalSemanticMatch<'a> {
     pub fn new(
-        index: &'a HashMap<String, Vec<Posting>>,
+        index: &'a HashMap<u32, Vec<Posting>>,
         pointers: Vec<Vec<TokenDocPointer>>,
         min_slop: i32,
     ) -> Self {

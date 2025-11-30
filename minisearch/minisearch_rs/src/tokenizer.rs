@@ -1,6 +1,7 @@
 use crate::parser::Query;
 use crate::stemmer::SnowballStemmer;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
+use ulid::Ulid;
 use unicode_segmentation::UnicodeSegmentation;
 
 static STOP_WORDS: [&str; 35] = [
@@ -29,6 +30,26 @@ impl Tokenizer {
         Self {
             stemmer: SnowballStemmer::new(),
         }
+    }
+
+    pub fn docs_tokens(&self, docs: Vec<String>) -> HashSet<String> {
+        let mut tokens: HashSet<String> = HashSet::new();
+
+        for doc in docs {
+            for word in doc.unicode_words() {
+                if STOP_WORDS.contains(&word) {
+                    continue;
+                }
+
+                if tokens.contains(word) {
+                    continue;
+                }
+
+                tokens.insert(word.to_ascii_lowercase());
+            }
+        }
+
+        return tokens;
     }
 
     pub fn tokenize_doc(&mut self, mut doc: String) -> (u32, HashMap<String, Vec<u32>>) {

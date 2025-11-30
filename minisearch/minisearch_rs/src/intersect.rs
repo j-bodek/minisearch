@@ -1,6 +1,7 @@
 use crate::index::Posting;
 use crate::tokenizer::TokenizedQuery;
 use crate::trie::Trie;
+use crate::utils::hasher::TokenHasher;
 use hashbrown::HashMap;
 use std::cmp::{max, Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -10,13 +11,13 @@ use ulid::Ulid;
 pub struct TokenDocPointer {
     pub doc_id: Ulid,
     pub doc_idx: u32,
-    pub token: String,
+    pub token: u32,
     pub distance: u16,
 }
 
 pub struct PostingListIntersection<'a> {
     query: TokenizedQuery,
-    index: &'a HashMap<String, Vec<Posting>>,
+    index: &'a HashMap<u32, Vec<Posting>>,
     docs: Vec<Vec<TokenDocPointer>>,
     pointers: Vec<BinaryHeap<Reverse<TokenDocPointer>>>,
 }
@@ -44,7 +45,8 @@ impl Eq for TokenDocPointer {}
 impl<'a> PostingListIntersection<'a> {
     pub fn new(
         query: TokenizedQuery,
-        index: &'a HashMap<String, Vec<Posting>>,
+        index: &'a HashMap<u32, Vec<Posting>>,
+        hasher: &TokenHasher,
         fuzzy_trie: &Trie,
     ) -> Option<Self> {
         let docs: Vec<Vec<TokenDocPointer>> = Vec::with_capacity(query.tokens.len());
@@ -59,6 +61,7 @@ impl<'a> PostingListIntersection<'a> {
                 {
                     continue;
                 }
+                let token = hasher.hash(&token).unwrap();
 
                 let pointer = TokenDocPointer {
                     doc_id: index.get(&token).unwrap()[0].doc_id,
@@ -86,7 +89,7 @@ impl<'a> PostingListIntersection<'a> {
     }
 
     fn next_docs(
-        index: &HashMap<String, Vec<Posting>>,
+        index: &HashMap<u32, Vec<Posting>>,
         pointer: &mut BinaryHeap<Reverse<TokenDocPointer>>,
     ) -> (f64, Vec<TokenDocPointer>) {
         let (mut max_score, mut doc_ids) = (0 as f64, Vec::<TokenDocPointer>::new());
@@ -114,7 +117,7 @@ impl<'a> PostingListIntersection<'a> {
     }
 
     fn geq_docs(
-        index: &HashMap<String, Vec<Posting>>,
+        index: &HashMap<u32, Vec<Posting>>,
         pointer: &mut BinaryHeap<Reverse<TokenDocPointer>>,
         target_doc: &Ulid,
     ) -> (f64, Vec<TokenDocPointer>) {

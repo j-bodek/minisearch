@@ -4,7 +4,9 @@ use crate::parser::Query;
 use crate::scoring::{bm25, term_bm25};
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
-use hashbrown::HashMap;
+use crate::utils::hasher::TokenHasher;
+use chumsky::container::Container;
+use hashbrown::{HashMap, HashSet};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::cmp::{Ordering, Reverse};
@@ -21,6 +23,7 @@ pub struct Posting {
 pub struct Document {
     pub tokens_num: u32,
     pub content: String,
+    pub tokens: HashSet<u32>,
 }
 
 pub struct Result {
@@ -50,10 +53,12 @@ impl Eq for Result {}
 
 #[pyclass(name = "Index")]
 pub struct Index {
-    index: HashMap<String, Vec<Posting>>,
+    index: HashMap<u32, Vec<Posting>>,
     documents: HashMap<Ulid, Document>,
+    deleted_documents: HashSet<Ulid>,
     ulid_generator: Generator,
     tokenizer: Tokenizer,
+    hasher: TokenHasher,
     fuzzy_trie: Trie,
     avg_doc_len: f64,
 }
@@ -70,8 +75,10 @@ impl Index {
         Self {
             index: HashMap::new(),
             documents: HashMap::new(),
+            deleted_documents: HashSet::with_capacity(100),
             ulid_generator: Generator::new(),
             tokenizer: Tokenizer::new(),
+            hasher: TokenHasher::new(),
             fuzzy_trie: fuzzy_trie,
             avg_doc_len: 0.0,
         }
@@ -79,33 +86,38 @@ impl Index {
 
     fn add(&mut self, doc: String) -> String {
         let doc_id = self.ulid_generator.generate().unwrap();
-        let (tokens_num, tokens) = self.tokenizer.tokenize_doc(doc.clone());
+        let (tokens_num, tokens_map) = self.tokenizer.tokenize_doc(doc.clone());
 
         self.avg_doc_len = (self.avg_doc_len * self.documents.len() as f64 + tokens_num as f64)
             / (self.documents.len() as f64 + 1.0);
-        self.documents.insert(
-            doc_id,
-            Document {
-                tokens_num: tokens_num,
-                content: doc,
-            },
-        );
 
-        for (token, positions) in tokens {
+        let mut tokens = HashSet::with_capacity(tokens_num as usize);
+        for (token, positions) in tokens_map {
             self.fuzzy_trie.add(&token);
+            let token = self.hasher.add(token);
             let posting = Posting {
                 doc_id: doc_id,
                 score: term_bm25(
                     positions.len() as u64,
-                    self.documents.len() as u64,
-                    self.index.entry_ref(&token).or_default().len() as u64 + 1,
+                    self.documents.len() as u64 + 1,
+                    self.index.entry(token).or_default().len() as u64 + 1,
                     tokens_num,
                     self.avg_doc_len,
                 ),
                 positions: positions,
             };
-            self.index.entry_ref(&token).or_default().push(posting);
+            self.index.entry(token).or_default().push(posting);
+            tokens.insert(token);
         }
+
+        self.documents.insert(
+            doc_id,
+            Document {
+                tokens_num: tokens_num,
+                content: doc,
+                tokens,
+            },
+        );
 
         doc_id.to_string()
     }
@@ -121,26 +133,39 @@ impl Index {
             }
         };
 
-        let doc = match self.documents.remove(&id) {
-            Some(d) => d,
-            _ => return Ok(true),
-        };
+        if !self.documents.contains_key(&id) {
+            return Ok(true);
+        }
 
-        let (_, tokens) = self.tokenizer.tokenize_doc(doc.content.clone());
-        for (token, _) in tokens {
-            let docs = self.index.get_mut(&token).unwrap();
-            match docs.binary_search_by(|p| p.doc_id.cmp(&id)) {
-                Ok(idx) => {
-                    docs.remove(idx);
-                }
-                _ => (),
+        self.deleted_documents.insert(id);
+        if self.deleted_documents.len() <= 1000 {
+            return Ok(true);
+        }
+
+        let tokens = self
+            .documents
+            .extract_if(|id, _| self.deleted_documents.contains(id))
+            .fold(HashSet::new(), |mut prev, cur| {
+                prev.extend(cur.1.tokens);
+                prev
+            });
+
+        for token in tokens {
+            let docs = match self.index.get_mut(&token) {
+                Some(docs) => docs,
+                _ => continue,
             };
+
+            docs.retain(|doc| !self.deleted_documents.contains(&doc.doc_id));
 
             if docs.len() == 0 {
                 self.index.remove(&token);
-                self.fuzzy_trie.delete(token);
+                self.fuzzy_trie
+                    .delete(self.hasher.unhash(token).unwrap().to_string());
             }
         }
+
+        self.deleted_documents.drain();
 
         Ok(true)
     }
@@ -154,8 +179,12 @@ impl Index {
         let slop = query.slop;
         let query = self.tokenizer.tokenize_query(query);
 
-        let intersection = match PostingListIntersection::new(query, &self.index, &self.fuzzy_trie)
-        {
+        let intersection = match PostingListIntersection::new(
+            query,
+            &self.index,
+            &self.hasher,
+            &self.fuzzy_trie,
+        ) {
             Some(iter) => iter,
             _ => return Ok(vec![]),
         };

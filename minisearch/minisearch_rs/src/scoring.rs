@@ -26,7 +26,7 @@ pub fn bm25(
     docs_num: u64,
     doc_length: u32,
     avg_doc_length: f64,
-    index: &HashMap<String, Vec<Posting>>,
+    index: &HashMap<u32, Vec<Posting>>,
     mis_result: MisResult,
 ) -> f64 {
     let mut score = 0.0;
