@@ -5,7 +5,6 @@ use crate::scoring::{bm25, term_bm25};
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
-use chumsky::container::Container;
 use hashbrown::{HashMap, HashSet};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -138,17 +137,18 @@ impl Index {
         }
 
         self.deleted_documents.insert(id);
-        if self.deleted_documents.len() <= 1000 {
+        if self.deleted_documents.len() >= self.documents.len() / 20 // if greater then 5% of all documents
+            || self.deleted_documents.len() <= 1000
+        {
             return Ok(true);
         }
 
-        let tokens = self
-            .documents
-            .extract_if(|id, _| self.deleted_documents.contains(id))
-            .fold(HashSet::new(), |mut prev, cur| {
-                prev.extend(cur.1.tokens);
-                prev
-            });
+        let mut tokens = HashSet::new();
+        for d_id in self.deleted_documents.iter() {
+            if let Some(doc) = self.documents.remove(d_id) {
+                tokens.extend(doc.tokens);
+            }
+        }
 
         for token in tokens {
             let docs = match self.index.get_mut(&token) {
@@ -160,8 +160,7 @@ impl Index {
 
             if docs.len() == 0 {
                 self.index.remove(&token);
-                self.fuzzy_trie
-                    .delete(self.hasher.unhash(token).unwrap().to_string());
+                self.fuzzy_trie.delete(self.hasher.delete(token).unwrap());
             }
         }
 
@@ -193,6 +192,10 @@ impl Index {
 
         for pointers in intersection {
             let (doc_id, mut score) = (pointers[0][0].doc_id, 0.0);
+            if self.deleted_documents.contains(&doc_id) {
+                continue;
+            }
+
             for mis_result in MinimalIntervalSemanticMatch::new(&self.index, pointers, slop as i32)
             {
                 score = bm25(

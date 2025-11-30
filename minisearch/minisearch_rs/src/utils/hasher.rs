@@ -47,13 +47,14 @@ impl TokenHasher {
         }
     }
 
-    pub fn delete(&mut self, token: u32) {
+    pub fn delete(&mut self, token: u32) -> Option<String> {
         if token as usize >= self.tokens.len() || self.tokens[token as usize].is_none() {
-            return;
+            return None;
         }
 
         let token_str = self.tokens[token as usize].take().unwrap();
         self.deleted.push(token);
         self.map.remove(&token_str);
+        Some(token_str)
     }
 }

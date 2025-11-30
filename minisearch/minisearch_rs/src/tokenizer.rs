@@ -1,7 +1,6 @@
 use crate::parser::Query;
 use crate::stemmer::SnowballStemmer;
 use hashbrown::{HashMap, HashSet};
-use ulid::Ulid;
 use unicode_segmentation::UnicodeSegmentation;
 
 static STOP_WORDS: [&str; 35] = [

@@ -61,7 +61,11 @@ impl<'a> PostingListIntersection<'a> {
                 {
                     continue;
                 }
-                let token = hasher.hash(&token).unwrap();
+
+                let token = match hasher.hash(&token) {
+                    Some(val) => val,
+                    _ => continue,
+                };
 
                 let pointer = TokenDocPointer {
                     doc_id: index.get(&token).unwrap()[0].doc_id,
