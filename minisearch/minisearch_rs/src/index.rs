@@ -5,11 +5,13 @@ use crate::scoring::{bm25, term_bm25};
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
+use crate::utils::writer::DocumentsWriter;
 use hashbrown::{HashMap, HashSet};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
+use std::ffi::OsString;
 use std::vec::Vec;
 use ulid::{Generator, Ulid};
 
@@ -21,6 +23,9 @@ pub struct Posting {
 
 pub struct Document {
     pub tokens_num: u32,
+    // pub segment: OsString,
+    // pub offset: usize,
+    // pub size: usize,
     pub content: String,
     pub tokens: HashSet<u32>,
 }
@@ -54,6 +59,7 @@ impl Eq for Result {}
 pub struct Index {
     index: HashMap<u32, Vec<Posting>>,
     documents: HashMap<Ulid, Document>,
+    writer: DocumentsWriter,
     deleted_documents: HashSet<Ulid>,
     ulid_generator: Generator,
     tokenizer: Tokenizer,
@@ -65,13 +71,14 @@ pub struct Index {
 #[pymethods]
 impl Index {
     #[new]
-    fn new() -> Self {
+    fn new(dir: OsString) -> Self {
         let mut fuzzy_trie = Trie::new();
         for i in 0..3 {
             fuzzy_trie.init_automaton(i);
         }
 
         Self {
+            writer: DocumentsWriter::new(dir),
             index: HashMap::new(),
             documents: HashMap::new(),
             deleted_documents: HashSet::with_capacity(100),
