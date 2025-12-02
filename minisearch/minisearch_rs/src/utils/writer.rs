@@ -28,7 +28,7 @@ pub struct DocumentsWriter {
 impl DocumentsWriter {
     pub fn new(dir: PathBuf) -> Result<Self, io::Error> {
         let cur_segment = match fs::exists(&dir) {
-            Ok(_) => {
+            Ok(true) => {
                 let mut segment: u64 = 0;
                 let mut segment_path = None;
                 for e in fs::read_dir(&dir)? {
@@ -60,7 +60,7 @@ impl DocumentsWriter {
                     None => Self::create_segment(&dir)?,
                 }
             }
-            Err(_) => {
+            Ok(false) | Err(_) => {
                 fs::create_dir_all(&dir)?;
                 Self::create_segment(&dir)?
             }

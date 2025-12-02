@@ -269,9 +269,10 @@ impl Index {
                 (
                     r.0.score,
                     r.0.doc_id.to_string(),
+                    // todo, don't read all of the data to memory, lazy load instead (some rust struct that can be returned?)
                     self.writer
                         .read(self.documents.get(&r.0.doc_id).unwrap())
-                        .unwrap(), //todo remove this unwrap
+                        .unwrap(), //todo remove this
                 )
             })
             .collect())
