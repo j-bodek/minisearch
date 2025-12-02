@@ -1,3 +1,4 @@
+use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
 use std::error::Error;
 use std::os::unix::prelude::FileExt;
 use std::{
@@ -92,8 +93,9 @@ impl DocumentsWriter {
         // update segment and meta file - use LZ4 compression
         let file = self.cur_segment.join("segment");
         let mut segment = File::options().append(true).open(&file)?;
+        let content = compress_prepend_size(content.as_bytes());
         let (offset, size) = (segment.metadata()?.len(), content.len());
-        segment.write(content.as_bytes())?;
+        segment.write(&content)?;
 
         let file = self.cur_segment.join("meta");
         let mut meta = File::options().append(true).open(&file)?;
@@ -124,7 +126,8 @@ impl DocumentsWriter {
         let segment = File::open(&file)?;
         let mut buf = vec![0u8; *size];
         segment.read_at(&mut buf, *offset)?;
+        let data = decompress_size_prepended(&buf)?;
 
-        Ok(String::from_utf8(buf)?)
+        Ok(String::from_utf8(data)?)
     }
 }
