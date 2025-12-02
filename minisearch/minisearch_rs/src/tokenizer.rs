@@ -51,7 +51,7 @@ impl Tokenizer {
         return tokens;
     }
 
-    pub fn tokenize_doc(&mut self, mut doc: String) -> (u32, HashMap<String, Vec<u32>>) {
+    pub fn tokenize_doc(&mut self, doc: &mut str) -> (u32, HashMap<String, Vec<u32>>) {
         doc.make_ascii_lowercase();
         let mut tokens: HashMap<String, Vec<u32>> = HashMap::new();
 

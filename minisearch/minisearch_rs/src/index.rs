@@ -5,13 +5,13 @@ use crate::scoring::{bm25, term_bm25};
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
-use crate::utils::writer::DocumentsWriter;
+use crate::utils::writer::{DocLocation, DocumentsWriter};
 use hashbrown::{HashMap, HashSet};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
-use std::ffi::OsString;
+use std::path::PathBuf;
 use std::vec::Vec;
 use ulid::{Generator, Ulid};
 
@@ -23,10 +23,7 @@ pub struct Posting {
 
 pub struct Document {
     pub tokens_num: u32,
-    // pub segment: OsString,
-    // pub offset: usize,
-    // pub size: usize,
-    pub content: String,
+    pub location: DocLocation,
     pub tokens: HashSet<u32>,
 }
 
@@ -71,14 +68,14 @@ pub struct Index {
 #[pymethods]
 impl Index {
     #[new]
-    fn new(dir: OsString) -> Self {
+    fn new(dir: PathBuf) -> PyResult<Self> {
         let mut fuzzy_trie = Trie::new();
         for i in 0..3 {
             fuzzy_trie.init_automaton(i);
         }
 
-        Self {
-            writer: DocumentsWriter::new(dir),
+        Ok(Self {
+            writer: DocumentsWriter::new(dir)?,
             index: HashMap::new(),
             documents: HashMap::new(),
             deleted_documents: HashSet::with_capacity(100),
@@ -87,12 +84,14 @@ impl Index {
             hasher: TokenHasher::new(),
             fuzzy_trie: fuzzy_trie,
             avg_doc_len: 0.0,
-        }
+        })
     }
 
-    fn add(&mut self, doc: String) -> String {
+    fn add(&mut self, mut doc: String) -> PyResult<String> {
         let doc_id = self.ulid_generator.generate().unwrap();
-        let (tokens_num, tokens_map) = self.tokenizer.tokenize_doc(doc.clone());
+        let location = self.writer.write(doc_id, &doc)?;
+
+        let (tokens_num, tokens_map) = self.tokenizer.tokenize_doc(&mut doc);
 
         self.avg_doc_len = (self.avg_doc_len * self.documents.len() as f64 + tokens_num as f64)
             / (self.documents.len() as f64 + 1.0);
@@ -120,12 +119,44 @@ impl Index {
             doc_id,
             Document {
                 tokens_num: tokens_num,
-                content: doc,
+                location: location,
                 tokens,
             },
         );
 
-        doc_id.to_string()
+        Ok(doc_id.to_string())
+    }
+
+    fn get(&self, id: String) -> PyResult<String> {
+        let id = match Ulid::from_string(&id) {
+            Ok(val) => val,
+            Err(e) => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid ULID: {}",
+                    e.to_string()
+                )))
+            }
+        };
+
+        let doc = match self.documents.get(&id) {
+            Some(doc) => doc,
+            None => {
+                return Err(PyKeyError::new_err(format!(
+                    "Document with id: {} does not exist",
+                    id,
+                )))
+            }
+        };
+
+        match self.writer.read(doc) {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                return Err(PyValueError::new_err(format!(
+                    "Error while reading document: {}",
+                    e.to_string()
+                )))
+            }
+        };
     }
 
     fn delete(&mut self, id: String) -> PyResult<bool> {
@@ -238,7 +269,9 @@ impl Index {
                 (
                     r.0.score,
                     r.0.doc_id.to_string(),
-                    self.documents.get(&r.0.doc_id).unwrap().content.clone(),
+                    self.writer
+                        .read(self.documents.get(&r.0.doc_id).unwrap())
+                        .unwrap(), //todo remove this unwrap
                 )
             })
             .collect())

@@ -1,23 +1,37 @@
+use std::error::Error;
+use std::os::unix::prelude::FileExt;
 use std::{
-    ffi::OsString,
     fs::{self, File},
-    path::Path,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+static SEGMENT_THRESHOLD: u64 = 100 * 1024 * 1024;
+
+use std::io::{self, prelude::*};
+use ulid::Ulid;
+
+use crate::index::Document;
+
+pub struct DocLocation {
+    pub segment: PathBuf,
+    pub offset: u64,
+    pub size: usize,
+}
+
 pub struct DocumentsWriter {
-    pub dir: OsString,
-    cur_segment: OsString,
+    pub dir: PathBuf,
+    cur_segment: PathBuf,
 }
 
 impl DocumentsWriter {
-    pub fn new(dir: OsString) -> Self {
+    pub fn new(dir: PathBuf) -> Result<Self, io::Error> {
         let cur_segment = match fs::exists(&dir) {
             Ok(_) => {
                 let mut segment: u64 = 0;
                 let mut segment_path = None;
-                for e in fs::read_dir(&dir).unwrap() {
-                    let path = e.unwrap().path();
+                for e in fs::read_dir(&dir)? {
+                    let path = e?.path();
                     if !path.is_dir() {
                         continue;
                     }
@@ -41,23 +55,23 @@ impl DocumentsWriter {
                 }
 
                 match segment_path {
-                    Some(path) => path.into_os_string(),
-                    None => Self::create_segment(&dir),
+                    Some(path) => path,
+                    None => Self::create_segment(&dir)?,
                 }
             }
             Err(_) => {
-                fs::create_dir_all(&dir);
-                Self::create_segment(&dir)
+                fs::create_dir_all(&dir)?;
+                Self::create_segment(&dir)?
             }
         };
 
-        Self {
+        Ok(Self {
             dir: dir,
-            cur_segment: OsString::new(),
-        }
+            cur_segment: cur_segment,
+        })
     }
 
-    fn create_segment(dir: &OsString) -> OsString {
+    fn create_segment(dir: &PathBuf) -> Result<PathBuf, io::Error> {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -65,12 +79,52 @@ impl DocumentsWriter {
             .to_string();
 
         let segment = Path::new(dir).join(ts);
-        fs::create_dir(&segment);
+        fs::create_dir(&segment)?;
 
         for f in ["segment", "meta", "del"] {
-            File::create(segment.join(f));
+            File::create(segment.join(f))?;
         }
 
-        segment.as_os_str().to_os_string()
+        Ok(segment)
+    }
+
+    pub fn write(&mut self, id: Ulid, content: &str) -> Result<DocLocation, io::Error> {
+        // update segment and meta file - use LZ4 compression
+        let file = self.cur_segment.join("segment");
+        let mut segment = File::options().append(true).open(&file)?;
+        let (offset, size) = (segment.metadata()?.len(), content.len());
+        segment.write(content.as_bytes())?;
+
+        let file = self.cur_segment.join("meta");
+        let mut meta = File::options().append(true).open(&file)?;
+        writeln!(&mut meta, "{},{},{}", id, offset, size)?;
+
+        let segment = self.cur_segment.clone();
+
+        // check if segment size exceded threshold - 100MB
+        if offset + size as u64 > SEGMENT_THRESHOLD {
+            self.cur_segment = Self::create_segment(&self.dir)?;
+        }
+
+        return Ok(DocLocation {
+            segment: segment,
+            offset: offset,
+            size: size,
+        });
+    }
+
+    pub fn read(&self, doc: &Document) -> Result<String, Box<dyn Error>> {
+        let DocLocation {
+            segment,
+            offset,
+            size,
+        } = &doc.location;
+
+        let file = segment.join("segment");
+        let segment = File::open(&file)?;
+        let mut buf = vec![0u8; *size];
+        segment.read_at(&mut buf, *offset)?;
+
+        Ok(String::from_utf8(buf)?)
     }
 }
