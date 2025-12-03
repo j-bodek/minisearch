@@ -24,6 +24,7 @@ pub struct Posting {
 
 #[derive(Decode, Encode, PartialEq, Debug)]
 pub struct Document {
+    pub id: [u8; 16], // binary representation of ULID
     pub location: DocLocation,
     pub tokens: Vec<u32>,
 }
@@ -76,9 +77,9 @@ impl Index {
         }
 
         Ok(Self {
-            writer: DocumentsWriter::new(dir)?,
             index: HashMap::new(),
-            documents: HashMap::new(),
+            documents: DocumentsWriter::load(&dir)?,
+            writer: DocumentsWriter::new(dir)?,
             deleted_documents: HashSet::with_capacity(100),
             ulid_generator: Generator::new(),
             tokenizer: Tokenizer::new(),

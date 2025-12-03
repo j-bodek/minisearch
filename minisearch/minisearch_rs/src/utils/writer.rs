@@ -1,6 +1,6 @@
 use crate::index::Document;
 use bincode::{Decode, Encode};
-use hashbrown::HashSet;
+use hashbrown::HashMap;
 use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
 use std::error::Error;
 use std::io::{self, prelude::*};
@@ -28,8 +28,8 @@ pub struct DocumentsWriter {
 
 impl DocumentsWriter {
     pub fn new(dir: PathBuf) -> Result<Self, io::Error> {
-        let cur_segment = match fs::exists(&dir) {
-            Ok(true) => {
+        let cur_segment = match fs::exists(&dir)? {
+            true => {
                 let mut segment: u64 = 0;
                 let mut segment_path = None;
                 for e in fs::read_dir(&dir)? {
@@ -61,7 +61,7 @@ impl DocumentsWriter {
                     None => Self::create_segment(&dir)?,
                 }
             }
-            Ok(false) | Err(_) => {
+            false => {
                 fs::create_dir_all(&dir)?;
                 Self::create_segment(&dir)?
             }
@@ -90,6 +90,48 @@ impl DocumentsWriter {
         Ok(segment)
     }
 
+    pub fn load(dir: &PathBuf) -> Result<HashMap<Ulid, Document>, io::Error> {
+        let mut documents = HashMap::new();
+        if fs::exists(&dir)? {
+            for e in fs::read_dir(&dir)? {
+                let path = e?.path();
+                if !path.is_dir() {
+                    continue;
+                }
+
+                // TODO: properly validate if dir is timestamp
+                if let Err(_) = path
+                    .file_name()
+                    .unwrap()
+                    .to_os_string()
+                    .to_str()
+                    .unwrap()
+                    .parse::<u64>()
+                {
+                    continue;
+                };
+
+                let path = path.join("meta");
+                let mut meta = File::open(path)?;
+                let meta_size = meta.metadata()?.len();
+
+                while meta.stream_position().unwrap() < meta_size {
+                    let mut size = [0u8; 8];
+                    meta.read(&mut size)?;
+                    let size = u64::from_be_bytes(size);
+                    let mut doc = vec![0u8; size as usize];
+                    meta.read(&mut doc)?;
+                    let (doc, _): (Document, usize) =
+                        bincode::decode_from_slice(&doc, bincode::config::standard()).unwrap();
+
+                    documents.insert(Ulid::from_bytes(doc.id), doc);
+                }
+            }
+        };
+
+        return Ok(documents);
+    }
+
     pub fn write(
         &mut self,
         id: Ulid,
@@ -105,6 +147,7 @@ impl DocumentsWriter {
 
         let segment = self.cur_segment.clone();
         let doc = Document {
+            id: id.to_bytes(),
             location: DocLocation {
                 segment: segment,
                 offset: offset,
