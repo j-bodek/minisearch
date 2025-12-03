@@ -6,6 +6,7 @@ use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
 use crate::utils::writer::{DocLocation, DocumentsWriter};
+use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
@@ -21,10 +22,10 @@ pub struct Posting {
     pub score: f64,
 }
 
+#[derive(Decode, Encode, PartialEq, Debug)]
 pub struct Document {
-    pub tokens_num: u32,
     pub location: DocLocation,
-    pub tokens: HashSet<u32>,
+    pub tokens: Vec<u32>,
 }
 
 pub struct Result {
@@ -89,14 +90,13 @@ impl Index {
 
     fn add(&mut self, mut doc: String) -> PyResult<String> {
         let doc_id = self.ulid_generator.generate().unwrap();
-        let location = self.writer.write(doc_id, &doc)?;
 
         let (tokens_num, tokens_map) = self.tokenizer.tokenize_doc(&mut doc);
 
         self.avg_doc_len = (self.avg_doc_len * self.documents.len() as f64 + tokens_num as f64)
             / (self.documents.len() as f64 + 1.0);
 
-        let mut tokens = HashSet::with_capacity(tokens_num as usize);
+        let mut tokens = Vec::with_capacity(tokens_num as usize);
         for (token, positions) in tokens_map {
             self.fuzzy_trie.add(&token);
             let token = self.hasher.add(token);
@@ -112,17 +112,11 @@ impl Index {
                 positions: positions,
             };
             self.index.entry(token).or_default().push(posting);
-            tokens.insert(token);
+            tokens.push(token);
         }
 
-        self.documents.insert(
-            doc_id,
-            Document {
-                tokens_num: tokens_num,
-                location: location,
-                tokens,
-            },
-        );
+        self.documents
+            .insert(doc_id, self.writer.write(doc_id, tokens, &doc)?);
 
         Ok(doc_id.to_string())
     }
@@ -239,7 +233,7 @@ impl Index {
             {
                 score = bm25(
                     self.documents.len() as u64,
-                    self.documents.get(&doc_id).unwrap().tokens_num,
+                    self.documents.get(&doc_id).unwrap().tokens.len() as u32,
                     self.avg_doc_len,
                     &self.index,
                     mis_result,

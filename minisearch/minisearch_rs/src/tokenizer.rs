@@ -52,15 +52,15 @@ impl Tokenizer {
     }
 
     pub fn tokenize_doc(&mut self, doc: &mut str) -> (u32, HashMap<String, Vec<u32>>) {
-        doc.make_ascii_lowercase();
         let mut tokens: HashMap<String, Vec<u32>> = HashMap::new();
 
         let mut i = 0;
         for word in doc.unicode_words() {
-            if STOP_WORDS.contains(&word) {
+            let word = word.to_owned().to_ascii_lowercase();
+            if STOP_WORDS.contains(&word.as_str()) {
                 continue;
             }
-            let word = self.stemmer.stem(word.to_string());
+            let word = self.stemmer.stem(word);
             tokens.entry_ref(&word).or_default().push(i);
             i += 1;
         }

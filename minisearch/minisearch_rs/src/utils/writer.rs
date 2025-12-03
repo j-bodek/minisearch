@@ -1,19 +1,20 @@
+use crate::index::Document;
+use bincode::{Decode, Encode};
+use hashbrown::HashSet;
 use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
 use std::error::Error;
+use std::io::{self, prelude::*};
 use std::os::unix::prelude::FileExt;
 use std::{
     fs::{self, File},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+use ulid::Ulid;
 
 static SEGMENT_THRESHOLD: u64 = 100 * 1024 * 1024;
 
-use std::io::{self, prelude::*};
-use ulid::Ulid;
-
-use crate::index::Document;
-
+#[derive(Decode, Encode, PartialEq, Debug)]
 pub struct DocLocation {
     pub segment: PathBuf,
     pub offset: u64,
@@ -89,30 +90,42 @@ impl DocumentsWriter {
         Ok(segment)
     }
 
-    pub fn write(&mut self, id: Ulid, content: &str) -> Result<DocLocation, io::Error> {
+    pub fn write(
+        &mut self,
+        id: Ulid,
+        tokens: Vec<u32>,
+        content: &str,
+    ) -> Result<Document, io::Error> {
         // update segment and meta file - use LZ4 compression
         let file = self.cur_segment.join("segment");
         let mut segment = File::options().append(true).open(&file)?;
         let content = compress_prepend_size(content.as_bytes());
         let (offset, size) = (segment.metadata()?.len(), content.len());
-        segment.write(&content)?;
+        segment.write_all(&content)?;
+
+        let segment = self.cur_segment.clone();
+        let doc = Document {
+            location: DocLocation {
+                segment: segment,
+                offset: offset,
+                size: size,
+            },
+            tokens,
+        };
 
         let file = self.cur_segment.join("meta");
         let mut meta = File::options().append(true).open(&file)?;
-        writeln!(&mut meta, "{},{},{}", id, offset, size)?;
-
-        let segment = self.cur_segment.clone();
+        let data = bincode::encode_to_vec(&doc, bincode::config::standard()).unwrap();
+        let data_size = (data.len() as u64).to_be_bytes();
+        meta.write_all(&data_size)?;
+        meta.write_all(&data)?;
 
         // check if segment size exceded threshold - 100MB
         if offset + size as u64 > SEGMENT_THRESHOLD {
             self.cur_segment = Self::create_segment(&self.dir)?;
         }
 
-        return Ok(DocLocation {
-            segment: segment,
-            offset: offset,
-            size: size,
-        });
+        return Ok(doc);
     }
 
     pub fn read(&self, doc: &Document) -> Result<String, Box<dyn Error>> {
