@@ -175,6 +175,7 @@ impl Index {
         }
 
         self.deleted_documents.insert(id);
+        self.writer.delete(id)?;
         if self.deleted_documents.len() >= self.documents.len() / 20 // if greater then 5% of all documents
             || self.deleted_documents.len() <= 1000
         {

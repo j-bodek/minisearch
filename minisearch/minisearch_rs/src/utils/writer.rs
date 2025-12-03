@@ -130,4 +130,11 @@ impl DocumentsWriter {
 
         Ok(String::from_utf8(data)?)
     }
+
+    pub fn delete(&self, id: Ulid) -> Result<(), io::Error> {
+        let file = self.cur_segment.join("del");
+        let mut deletes = File::options().append(true).open(&file)?;
+        writeln!(&mut deletes, "{}", id)?;
+        Ok(())
+    }
 }
