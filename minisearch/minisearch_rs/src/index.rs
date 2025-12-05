@@ -76,13 +76,11 @@ impl Index {
             fuzzy_trie.init_automaton(i);
         }
 
-        let (documents, deletes) = DocumentsWriter::load(&dir)?;
-
         Ok(Self {
             index: HashMap::new(),
-            documents: documents,
+            documents: DocumentsWriter::load(&dir)?,
             writer: DocumentsWriter::new(dir)?,
-            deleted_documents: deletes,
+            deleted_documents: HashSet::with_capacity(100),
             ulid_generator: Generator::new(),
             tokenizer: Tokenizer::new(),
             hasher: TokenHasher::new(),

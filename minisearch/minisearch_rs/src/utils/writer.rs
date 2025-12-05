@@ -90,7 +90,7 @@ impl DocumentsWriter {
         Ok(segment)
     }
 
-    pub fn load(dir: &PathBuf) -> Result<(HashMap<Ulid, Document>, HashSet<Ulid>), io::Error> {
+    pub fn load(dir: &PathBuf) -> Result<HashMap<Ulid, Document>, io::Error> {
         let (mut documents, mut deletes) = (HashMap::new(), HashSet::new());
         if fs::exists(&dir)? {
             for e in fs::read_dir(&dir)? {
@@ -111,6 +111,16 @@ impl DocumentsWriter {
                     continue;
                 };
 
+                let del = path.join("del");
+                let mut del = File::open(del)?;
+                let del_size = del.metadata()?.len();
+
+                while del.stream_position().unwrap() < del_size {
+                    let mut ulid = [0u8; 16];
+                    del.read_exact(&mut ulid)?;
+                    deletes.insert(Ulid::from_bytes(ulid));
+                }
+
                 let meta = path.join("meta");
                 let mut meta = File::open(meta)?;
                 let meta_size = meta.metadata()?.len();
@@ -124,22 +134,17 @@ impl DocumentsWriter {
                     let (doc, _): (Document, usize) =
                         bincode::decode_from_slice(&doc, bincode::config::standard()).unwrap();
 
+                    let ulid = Ulid::from_bytes(doc.id);
+                    if deletes.contains(&ulid) {
+                        continue;
+                    }
+
                     documents.insert(Ulid::from_bytes(doc.id), doc);
-                }
-
-                let del = path.join("del");
-                let mut del = File::open(del)?;
-                let del_size = del.metadata()?.len();
-
-                while del.stream_position().unwrap() < del_size {
-                    let mut ulid = [0u8; 16];
-                    del.read_exact(&mut ulid)?;
-                    deletes.insert(Ulid::from_bytes(ulid));
                 }
             }
         };
 
-        return Ok((documents, deletes));
+        return Ok(documents);
     }
 
     pub fn write(
