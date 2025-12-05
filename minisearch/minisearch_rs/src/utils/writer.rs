@@ -1,6 +1,6 @@
 use crate::index::Document;
 use bincode::{Decode, Encode};
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
 use std::error::Error;
 use std::io::{self, prelude::*};
@@ -90,8 +90,8 @@ impl DocumentsWriter {
         Ok(segment)
     }
 
-    pub fn load(dir: &PathBuf) -> Result<HashMap<Ulid, Document>, io::Error> {
-        let mut documents = HashMap::new();
+    pub fn load(dir: &PathBuf) -> Result<(HashMap<Ulid, Document>, HashSet<Ulid>), io::Error> {
+        let (mut documents, mut deletes) = (HashMap::new(), HashSet::new());
         if fs::exists(&dir)? {
             for e in fs::read_dir(&dir)? {
                 let path = e?.path();
@@ -111,25 +111,35 @@ impl DocumentsWriter {
                     continue;
                 };
 
-                let path = path.join("meta");
-                let mut meta = File::open(path)?;
+                let meta = path.join("meta");
+                let mut meta = File::open(meta)?;
                 let meta_size = meta.metadata()?.len();
 
                 while meta.stream_position().unwrap() < meta_size {
                     let mut size = [0u8; 8];
-                    meta.read(&mut size)?;
+                    meta.read_exact(&mut size)?;
                     let size = u64::from_be_bytes(size);
                     let mut doc = vec![0u8; size as usize];
-                    meta.read(&mut doc)?;
+                    meta.read_exact(&mut doc)?;
                     let (doc, _): (Document, usize) =
                         bincode::decode_from_slice(&doc, bincode::config::standard()).unwrap();
 
                     documents.insert(Ulid::from_bytes(doc.id), doc);
                 }
+
+                let del = path.join("del");
+                let mut del = File::open(del)?;
+                let del_size = del.metadata()?.len();
+
+                while del.stream_position().unwrap() < del_size {
+                    let mut ulid = [0u8; 16];
+                    del.read_exact(&mut ulid)?;
+                    deletes.insert(Ulid::from_bytes(ulid));
+                }
             }
         };
 
-        return Ok(documents);
+        return Ok((documents, deletes));
     }
 
     pub fn write(
@@ -190,7 +200,7 @@ impl DocumentsWriter {
     pub fn delete(&self, id: Ulid) -> Result<(), io::Error> {
         let file = self.cur_segment.join("del");
         let mut deletes = File::options().append(true).open(&file)?;
-        writeln!(&mut deletes, "{}", id)?;
+        deletes.write_all(&id.to_bytes())?;
         Ok(())
     }
 }
