@@ -40,6 +40,34 @@ impl Buffer {
         }
     }
 
+    fn write_document(&mut self, doc: &str) -> (usize, usize) {
+        let offset = self.documents.len();
+        self.documents
+            .resize(offset + get_maximum_output_size(doc.len()), 0);
+        let size = compress_into(doc.as_bytes(), &mut self.documents[offset..]).unwrap();
+        self.documents.truncate(offset + size);
+
+        (offset, size)
+    }
+
+    fn write_meta(&mut self, doc: &Document) -> Result<(), Box<dyn Error>> {
+        let config = bincode::config::standard();
+        let size = {
+            let mut size_writer =
+                EncoderImpl::<_, Configuration>::new(SizeWriter::default(), config);
+            doc.encode(&mut size_writer)?;
+            size_writer.into_writer().bytes_written
+        };
+
+        self.meta.extend((size as u64).to_be_bytes());
+        let offset = self.meta.len();
+        self.meta.resize(offset + size, 0);
+
+        let size = bincode::encode_into_slice(&doc, &mut self.meta[offset..], config).unwrap();
+        self.meta.truncate(offset + size);
+        Ok(())
+    }
+
     fn reset(&mut self) {
         self.documents.clear();
         self.meta.clear();
@@ -195,17 +223,7 @@ impl DocumentsWriter {
         content: &str,
     ) -> Result<Document, Box<dyn Error>> {
         // write segment to buffer
-        let data_offset = self.buffer.documents.len();
-        self.buffer
-            .documents
-            .resize(data_offset + get_maximum_output_size(content.len()), 0);
-        let size = compress_into(
-            content.as_bytes(),
-            &mut self.buffer.documents[data_offset..],
-        )
-        .unwrap();
-        self.buffer.documents.truncate(data_offset + size);
-
+        let (data_offset, size) = self.buffer.write_document(&content);
         let offset = self.buffer.segment_size(&self.cur_segment)? + data_offset as u64;
 
         let doc = Document {
@@ -218,39 +236,15 @@ impl DocumentsWriter {
             tokens,
         };
 
-        let config = bincode::config::standard();
-        let size = {
-            let mut size_writer =
-                EncoderImpl::<_, Configuration>::new(SizeWriter::default(), config);
-            doc.encode(&mut size_writer)?;
-            size_writer.into_writer().bytes_written
-        };
+        self.buffer.write_meta(&doc)?;
 
-        self.buffer.meta.extend((size as u64).to_be_bytes());
-        let data_offset = self.buffer.meta.len();
-        self.buffer.meta.resize(data_offset + size, 0);
-
-        let size =
-            bincode::encode_into_slice(&doc, &mut self.buffer.meta[data_offset..], config).unwrap();
-        self.buffer.meta.truncate(data_offset + size);
-
-        if offset + size as u64 > SEGMENT_THRESHOLD
-            || self.buffer.documents.len() as u64 > DOCUMENTS_BUFFER_THRESHOLD
-        {
-            let file = self.cur_segment.join("segment");
-            let mut segment = File::options().append(true).open(&file)?;
-
-            let file = self.cur_segment.join("meta");
-            let mut meta = File::options().append(true).open(&file)?;
-
-            // flush data to disk
-            segment.write_all(&self.buffer.documents)?;
-            meta.write_all(&self.buffer.meta)?;
-            self.buffer.reset();
+        if self.buffer.documents.len() as u64 > DOCUMENTS_BUFFER_THRESHOLD {
+            self.flush()?;
         }
 
         // check if segment size exceded threshold - 100MB
         if offset + size as u64 > SEGMENT_THRESHOLD {
+            self.flush()?;
             self.cur_segment = Self::create_segment(&self.dir)?;
         }
 
@@ -277,6 +271,20 @@ impl DocumentsWriter {
         let file = self.cur_segment.join("del");
         let mut deletes = File::options().append(true).open(&file)?;
         deletes.write_all(&id.to_bytes())?;
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> Result<(), io::Error> {
+        let file = self.cur_segment.join("segment");
+        let mut segment = File::options().append(true).open(&file)?;
+
+        let file = self.cur_segment.join("meta");
+        let mut meta = File::options().append(true).open(&file)?;
+
+        // flush data to disk
+        segment.write_all(&self.buffer.documents)?;
+        meta.write_all(&self.buffer.meta)?;
+        self.buffer.reset();
         Ok(())
     }
 }

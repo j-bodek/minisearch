@@ -76,9 +76,12 @@ impl Index {
             fuzzy_trie.init_automaton(i);
         }
 
+        let documents = DocumentsWriter::load(&dir)?;
+        println!("documents length: {}", documents.len());
+
         Ok(Self {
             index: HashMap::new(),
-            documents: DocumentsWriter::load(&dir)?,
+            documents: documents,
             writer: DocumentsWriter::new(dir)?,
             deleted_documents: HashSet::with_capacity(100),
             ulid_generator: Generator::new(),
@@ -280,5 +283,10 @@ impl Index {
                 )
             })
             .collect())
+    }
+
+    fn flush(&mut self) -> PyResult<()> {
+        self.writer.flush()?;
+        Ok(())
     }
 }
