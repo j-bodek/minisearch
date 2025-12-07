@@ -176,12 +176,13 @@ impl Index {
             }
         };
 
-        if !self.documents.contains_key(&id) {
-            return Ok(true);
-        }
+        let doc = match self.documents.get(&id) {
+            Some(doc) => doc,
+            None => return Ok(true),
+        };
 
         self.deleted_documents.insert(id);
-        self.writer.delete(id)?;
+        self.writer.delete(&doc)?;
         if self.deleted_documents.len() >= self.documents.len() / 20 // if greater then 5% of all documents
             || self.deleted_documents.len() <= 1000
         {

@@ -6,6 +6,7 @@ use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
 use lz4_flex::block::{compress_into, decompress_size_prepended, get_maximum_output_size};
 use std::error::Error;
+use std::hash::Hash;
 use std::io::{self, prelude::*};
 use std::os::unix::prelude::FileExt;
 use std::{
@@ -23,6 +24,12 @@ pub struct DocLocation {
     pub segment: PathBuf,
     pub offset: u64,
     pub size: usize,
+}
+
+#[derive(Debug)]
+struct Segment {
+    size: u64,
+    deleted: u64,
 }
 
 struct Buffer {
@@ -91,11 +98,13 @@ impl Buffer {
 pub struct DocumentsWriter {
     pub dir: PathBuf,
     buffer: Buffer,
+    segments: HashMap<PathBuf, Segment>,
     cur_segment: PathBuf,
 }
 
 impl DocumentsWriter {
     pub fn new(dir: PathBuf) -> Result<Self, io::Error> {
+        let mut segments = HashMap::new();
         let cur_segment = match fs::exists(&dir)? {
             true => {
                 let mut segment: u64 = 0;
@@ -115,8 +124,29 @@ impl DocumentsWriter {
                         .parse::<u64>()
                     {
                         Ok(val) => val,
-                        Err(_) => 0,
+                        Err(_) => continue,
                     };
+
+                    let segment_file = File::open(&path.join("segment"))?;
+
+                    let mut del = File::open(path.join("del"))?;
+                    let del_size = del.metadata()?.len();
+                    let mut deleted = 0;
+
+                    while del.stream_position().unwrap() < del_size {
+                        let mut size = [0u8; 8];
+                        del.seek_relative(16)?; // skip 'ulid'
+                        del.read_exact(&mut size)?;
+                        deleted += u64::from_be_bytes(size);
+                    }
+
+                    segments.insert(
+                        path.clone(),
+                        Segment {
+                            size: segment_file.metadata()?.len(),
+                            deleted: deleted,
+                        },
+                    );
 
                     if name > segment {
                         segment = name;
@@ -135,9 +165,12 @@ impl DocumentsWriter {
             }
         };
 
+        println!("segments: {:?}", segments);
+
         Ok(Self {
             dir: dir,
             buffer: Buffer::new(),
+            segments: segments,
             cur_segment: cur_segment,
         })
     }
@@ -187,6 +220,7 @@ impl DocumentsWriter {
                 while del.stream_position().unwrap() < del_size {
                     let mut ulid = [0u8; 16];
                     del.read_exact(&mut ulid)?;
+                    del.seek_relative(8)?; // skip 'deleted size'
                     deletes.insert(Ulid::from_bytes(ulid));
                 }
 
@@ -267,10 +301,14 @@ impl DocumentsWriter {
         Ok(String::from_utf8(data)?)
     }
 
-    pub fn delete(&self, id: Ulid) -> Result<(), io::Error> {
-        let file = self.cur_segment.join("del");
+    pub fn delete(&mut self, doc: &Document) -> Result<(), io::Error> {
+        let file = doc.location.segment.join("del");
         let mut deletes = File::options().append(true).open(&file)?;
-        deletes.write_all(&id.to_bytes())?;
+        deletes.write_all(&doc.id)?;
+        deletes.write_all(&(doc.location.size as u64).to_be_bytes())?;
+        if let Some(segment) = self.segments.get_mut(&doc.location.segment) {
+            segment.deleted += doc.location.size as u64;
+        }
         Ok(())
     }
 
