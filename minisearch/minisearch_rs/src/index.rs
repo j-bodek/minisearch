@@ -8,7 +8,7 @@ use crate::utils::hasher::TokenHasher;
 use crate::utils::writer::{DocLocation, DocumentsWriter};
 use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
-use pyo3::exceptions::{PyKeyError, PyValueError};
+use pyo3::exceptions::{PyKeyError, PyOSError, PyValueError};
 use pyo3::prelude::*;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -116,8 +116,16 @@ impl Index {
             tokens.push(token);
         }
 
-        self.documents
-            .insert(doc_id, self.writer.write(doc_id, tokens, &doc)?);
+        let doc = match self.writer.write(doc_id, tokens, &doc) {
+            Ok(doc) => doc,
+            Err(e) => {
+                return Err(PyOSError::new_err(format!(
+                    "Failed to write document on disk: {}",
+                    e
+                )))
+            }
+        };
+        self.documents.insert(doc_id, doc);
 
         Ok(doc_id.to_string())
     }

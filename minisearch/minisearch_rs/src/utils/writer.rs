@@ -1,7 +1,10 @@
 use crate::index::Document;
+use bincode::config::Configuration;
+use bincode::enc::write::SizeWriter;
+use bincode::enc::EncoderImpl;
 use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
-use lz4_flex::block::{compress_prepend_size, decompress_size_prepended};
+use lz4_flex::block::{compress_into, decompress_size_prepended, get_maximum_output_size};
 use std::error::Error;
 use std::io::{self, prelude::*};
 use std::os::unix::prelude::FileExt;
@@ -13,6 +16,7 @@ use std::{
 use ulid::Ulid;
 
 static SEGMENT_THRESHOLD: u64 = 100 * 1024 * 1024;
+static DOCUMENTS_BUFFER_THRESHOLD: u64 = 1024 * 1024;
 
 #[derive(Decode, Encode, PartialEq, Debug)]
 pub struct DocLocation {
@@ -21,8 +25,44 @@ pub struct DocLocation {
     pub size: usize,
 }
 
+struct Buffer {
+    segment_size: Option<u64>,
+    documents: Vec<u8>,
+    meta: Vec<u8>,
+}
+
+impl Buffer {
+    fn new() -> Self {
+        Self {
+            segment_size: None,
+            documents: vec![],
+            meta: vec![],
+        }
+    }
+
+    fn reset(&mut self) {
+        self.documents.clear();
+        self.meta.clear();
+        self.segment_size.take();
+    }
+
+    fn segment_size(&mut self, segment: &PathBuf) -> Result<u64, io::Error> {
+        match self.segment_size {
+            Some(size) => Ok(size),
+            None => {
+                let file = segment.join("segment");
+                let segment = File::options().append(true).open(&file)?;
+                let size = segment.metadata()?.len();
+                self.segment_size.replace(size);
+                Ok(size)
+            }
+        }
+    }
+}
+
 pub struct DocumentsWriter {
     pub dir: PathBuf,
+    buffer: Buffer,
     cur_segment: PathBuf,
 }
 
@@ -69,6 +109,7 @@ impl DocumentsWriter {
 
         Ok(Self {
             dir: dir,
+            buffer: Buffer::new(),
             cur_segment: cur_segment,
         })
     }
@@ -152,31 +193,61 @@ impl DocumentsWriter {
         id: Ulid,
         tokens: Vec<u32>,
         content: &str,
-    ) -> Result<Document, io::Error> {
-        // update segment and meta file - use LZ4 compression
-        let file = self.cur_segment.join("segment");
-        let mut segment = File::options().append(true).open(&file)?;
-        let content = compress_prepend_size(content.as_bytes());
-        let (offset, size) = (segment.metadata()?.len(), content.len());
-        segment.write_all(&content)?;
+    ) -> Result<Document, Box<dyn Error>> {
+        // write segment to buffer
+        let data_offset = self.buffer.documents.len();
+        self.buffer
+            .documents
+            .resize(data_offset + get_maximum_output_size(content.len()), 0);
+        let size = compress_into(
+            content.as_bytes(),
+            &mut self.buffer.documents[data_offset..],
+        )
+        .unwrap();
+        self.buffer.documents.truncate(data_offset + size);
 
-        let segment = self.cur_segment.clone();
+        let offset = self.buffer.segment_size(&self.cur_segment)? + data_offset as u64;
+
         let doc = Document {
             id: id.to_bytes(),
             location: DocLocation {
-                segment: segment,
+                segment: self.cur_segment.clone(),
                 offset: offset,
                 size: size,
             },
             tokens,
         };
 
-        let file = self.cur_segment.join("meta");
-        let mut meta = File::options().append(true).open(&file)?;
-        let data = bincode::encode_to_vec(&doc, bincode::config::standard()).unwrap();
-        let data_size = (data.len() as u64).to_be_bytes();
-        meta.write_all(&data_size)?;
-        meta.write_all(&data)?;
+        let config = bincode::config::standard();
+        let size = {
+            let mut size_writer =
+                EncoderImpl::<_, Configuration>::new(SizeWriter::default(), config);
+            doc.encode(&mut size_writer)?;
+            size_writer.into_writer().bytes_written
+        };
+
+        self.buffer.meta.extend((size as u64).to_be_bytes());
+        let data_offset = self.buffer.meta.len();
+        self.buffer.meta.resize(data_offset + size, 0);
+
+        let size =
+            bincode::encode_into_slice(&doc, &mut self.buffer.meta[data_offset..], config).unwrap();
+        self.buffer.meta.truncate(data_offset + size);
+
+        if offset + size as u64 > SEGMENT_THRESHOLD
+            || self.buffer.documents.len() as u64 > DOCUMENTS_BUFFER_THRESHOLD
+        {
+            let file = self.cur_segment.join("segment");
+            let mut segment = File::options().append(true).open(&file)?;
+
+            let file = self.cur_segment.join("meta");
+            let mut meta = File::options().append(true).open(&file)?;
+
+            // flush data to disk
+            segment.write_all(&self.buffer.documents)?;
+            meta.write_all(&self.buffer.meta)?;
+            self.buffer.reset();
+        }
 
         // check if segment size exceded threshold - 100MB
         if offset + size as u64 > SEGMENT_THRESHOLD {
