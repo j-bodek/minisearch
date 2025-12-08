@@ -290,4 +290,9 @@ impl Index {
         self.writer.flush()?;
         Ok(())
     }
+
+    fn merge(&mut self) -> PyResult<()> {
+        self.writer.clean()?;
+        Ok(())
+    }
 }

@@ -6,6 +6,7 @@ use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
 use lz4_flex::block::{compress_into, decompress_size_prepended, get_maximum_output_size};
 use std::error::Error;
+use std::fs::remove_dir_all;
 use std::hash::Hash;
 use std::io::{self, prelude::*};
 use std::os::unix::prelude::FileExt;
@@ -16,8 +17,9 @@ use std::{
 };
 use ulid::Ulid;
 
-static SEGMENT_THRESHOLD: u64 = 100 * 1024 * 1024;
+static SEGMENT_THRESHOLD: u64 = 1 * 1024 * 1024;
 static DOCUMENTS_BUFFER_THRESHOLD: u64 = 1024 * 1024;
+static MERGE_THRESHOLD: f64 = 0.3;
 
 #[derive(Decode, Encode, PartialEq, Debug)]
 pub struct DocLocation {
@@ -26,8 +28,9 @@ pub struct DocLocation {
     pub size: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Segment {
+    name: u128,
     size: u64,
     deleted: u64,
 }
@@ -107,7 +110,7 @@ impl DocumentsWriter {
         let mut segments = HashMap::new();
         let cur_segment = match fs::exists(&dir)? {
             true => {
-                let mut segment: u64 = 0;
+                let mut segment = 0;
                 let mut segment_path = None;
                 for e in fs::read_dir(&dir)? {
                     let path = e?.path();
@@ -121,7 +124,7 @@ impl DocumentsWriter {
                         .to_os_string()
                         .to_str()
                         .unwrap()
-                        .parse::<u64>()
+                        .parse::<u128>()
                     {
                         Ok(val) => val,
                         Err(_) => continue,
@@ -143,6 +146,7 @@ impl DocumentsWriter {
                     segments.insert(
                         path.clone(),
                         Segment {
+                            name: name,
                             size: segment_file.metadata()?.len(),
                             deleted: deleted,
                         },
@@ -165,8 +169,6 @@ impl DocumentsWriter {
             }
         };
 
-        println!("segments: {:?}", segments);
-
         Ok(Self {
             dir: dir,
             buffer: Buffer::new(),
@@ -176,10 +178,11 @@ impl DocumentsWriter {
     }
 
     fn create_segment(dir: &PathBuf) -> Result<PathBuf, io::Error> {
+        // TODO: append new segment to segments
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs()
+            .as_nanos()
             .to_string();
 
         let segment = Path::new(dir).join(ts);
@@ -269,18 +272,8 @@ impl DocumentsWriter {
             },
             tokens,
         };
-
         self.buffer.write_meta(&doc)?;
-
-        if self.buffer.documents.len() as u64 > DOCUMENTS_BUFFER_THRESHOLD {
-            self.flush()?;
-        }
-
-        // check if segment size exceded threshold - 100MB
-        if offset + size as u64 > SEGMENT_THRESHOLD {
-            self.flush()?;
-            self.cur_segment = Self::create_segment(&self.dir)?;
-        }
+        self.save_buffer(offset + size as u64)?;
 
         return Ok(doc);
     }
@@ -323,6 +316,86 @@ impl DocumentsWriter {
         segment.write_all(&self.buffer.documents)?;
         meta.write_all(&self.buffer.meta)?;
         self.buffer.reset();
+        Ok(())
+    }
+
+    pub fn clean(&mut self) -> Result<(), io::Error> {
+        let mut segments = self
+            .segments
+            .clone()
+            .into_iter()
+            .collect::<Vec<(PathBuf, Segment)>>();
+        segments.sort_by(|x, y| x.1.name.cmp(&y.1.name));
+
+        for (path, segment) in segments {
+            if (segment.deleted as f64 / segment.size as f64) < MERGE_THRESHOLD {
+                continue;
+            }
+
+            let mut deletes = HashSet::new();
+            let del = path.join("del");
+            let mut del = File::open(del)?;
+            let del_size = del.metadata()?.len();
+
+            while del.stream_position().unwrap() < del_size {
+                let mut ulid = [0u8; 16];
+                del.read_exact(&mut ulid)?;
+                del.seek_relative(8)?; // skip 'deleted size'
+                deletes.insert(Ulid::from_bytes(ulid));
+            }
+
+            let file = path.join("segment");
+            let segment = File::open(&file)?;
+
+            let meta = path.join("meta");
+            let mut meta = File::open(meta)?;
+            let meta_size = meta.metadata()?.len();
+
+            while meta.stream_position().unwrap() < meta_size {
+                let mut size_buf = [0u8; 8];
+                meta.read_exact(&mut size_buf)?;
+                let size = u64::from_be_bytes(size_buf);
+                let mut doc_buf = vec![0u8; size as usize];
+                meta.read_exact(&mut doc_buf)?;
+                let (doc, _): (Document, usize) =
+                    bincode::decode_from_slice(&doc_buf, bincode::config::standard()).unwrap();
+
+                let ulid = Ulid::from_bytes(doc.id);
+                if deletes.contains(&ulid) {
+                    continue;
+                }
+
+                let offset = self.buffer.documents.len();
+                self.buffer.documents.resize(offset + doc.location.size, 0);
+                segment.read_at(&mut self.buffer.documents[offset..], doc.location.offset)?;
+
+                self.buffer.meta.extend(size_buf);
+                self.buffer.meta.extend(doc_buf);
+
+                let segment_size = self.buffer.segment_size(&self.cur_segment)?
+                    + self.buffer.documents.len() as u64;
+                self.save_buffer(segment_size)?;
+            }
+
+            remove_dir_all(&path)?;
+            self.segments.remove(&path);
+        }
+        self.flush()?;
+
+        Ok(())
+    }
+
+    fn save_buffer(&mut self, segment_size: u64) -> Result<(), io::Error> {
+        if self.buffer.documents.len() as u64 > DOCUMENTS_BUFFER_THRESHOLD {
+            self.flush()?;
+        }
+
+        // check if segment size exceded threshold - 100MB
+        if segment_size > SEGMENT_THRESHOLD {
+            self.flush()?;
+            self.cur_segment = Self::create_segment(&self.dir)?;
+        }
+
         Ok(())
     }
 }
