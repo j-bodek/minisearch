@@ -25,33 +25,59 @@ static MERGE_THRESHOLD: f64 = 0.3;
 #[derive(Decode, Encode, PartialEq, Debug, Clone)]
 pub struct Document {
     pub id: [u8; 16], // binary representation of ULID
+    data: Option<String>,
     pub location: DocLocation,
     pub tokens: Vec<u32>,
 }
 
+impl Document {
+    fn new(id: [u8; 16], location: DocLocation, tokens: Vec<u32>) -> Self {
+        Self {
+            id: id,
+            data: None,
+            location: location,
+            tokens: tokens,
+        }
+    }
+}
+
 #[pymethods]
 impl Document {
-    pub fn content(&self) -> PyResult<String> {
-        let DocLocation {
-            segment,
-            offset,
-            size,
-        } = &self.location;
+    #[getter(id)]
+    pub fn id(&self) -> PyResult<String> {
+        Ok(Ulid::from_bytes(self.id).to_string())
+    }
 
-        let data = File::open(segment.join("data"))?;
-        let mut buf = vec![0u8; *size];
-        data.read_at(&mut buf, *offset)?;
-        let data = match decompress_size_prepended(&buf) {
-            Ok(data) => data,
-            Err(err) => {
-                return Err(PyValueError::new_err(format!(
-                    "Failed to decompress document content: {}",
-                    err
-                )))
+    #[getter(content)]
+    pub fn content(&mut self) -> PyResult<String> {
+        let content = match &self.data {
+            Some(val) => val.clone(),
+            None => {
+                let DocLocation {
+                    segment,
+                    offset,
+                    size,
+                } = &self.location;
+
+                let data = File::open(segment.join("data"))?;
+                let mut buf = vec![0u8; *size];
+                data.read_at(&mut buf, *offset)?;
+                let data = match decompress_size_prepended(&buf) {
+                    Ok(data) => data,
+                    Err(err) => {
+                        return Err(PyValueError::new_err(format!(
+                            "Failed to decompress document content: {}",
+                            err
+                        )))
+                    }
+                };
+                let data = String::from_utf8(data)?;
+                self.data.replace(data.clone());
+                data
             }
         };
 
-        Ok(String::from_utf8(data)?)
+        Ok(content)
     }
 }
 
@@ -85,13 +111,17 @@ impl Buffer {
     }
 
     fn write_document(&mut self, doc: &str) -> (usize, usize) {
+        // preappend document length
+        self.documents.extend((doc.len() as u32).to_le_bytes());
         let offset = self.documents.len();
+
         self.documents
             .resize(offset + get_maximum_output_size(doc.len()), 0);
-        let size = compress_into(doc.as_bytes(), &mut self.documents[offset..]).unwrap();
-        self.documents.truncate(offset + size);
+        let compressed_size = compress_into(doc.as_bytes(), &mut self.documents[offset..]).unwrap();
+        self.documents.truncate(offset + compressed_size);
 
-        (offset, size)
+        // 4 bytes for extra preappended document length
+        (offset - 4, compressed_size + 4)
     }
 
     fn write_meta(&mut self, doc: &Document) -> Result<(), Box<dyn Error>> {
@@ -232,15 +262,16 @@ impl DocumentsManager {
         let (data_offset, size) = self.buffer.write_document(&content);
         let offset = self.buffer.segment_size(&self.cur_segment)? + data_offset as u64;
 
-        let doc = Document {
-            id: id.to_bytes(),
-            location: DocLocation {
+        let doc = Document::new(
+            id.to_bytes(),
+            DocLocation {
                 segment: self.cur_segment.clone(),
                 offset: offset,
                 size: size,
             },
             tokens,
-        };
+        );
+
         self.buffer.write_meta(&doc)?;
         self.save_buffer(offset + size as u64)?;
 

@@ -120,7 +120,7 @@ impl Index {
         Ok(doc_id.to_string())
     }
 
-    fn get(&self, id: String) -> PyResult<String> {
+    fn get(&self, id: String) -> PyResult<Document> {
         let id = match Ulid::from_string(&id) {
             Ok(val) => val,
             Err(e) => {
@@ -141,7 +141,7 @@ impl Index {
             }
         };
 
-        doc.content()
+        Ok(doc.clone())
     }
 
     fn delete(&mut self, id: String) -> PyResult<bool> {
@@ -189,7 +189,7 @@ impl Index {
         Ok(true)
     }
 
-    fn search(&mut self, mut query: String, top_k: u8) -> PyResult<Vec<(f64, String, Document)>> {
+    fn search(&mut self, mut query: String, top_k: u8) -> PyResult<Vec<(f64, Document)>> {
         let query = match Query::parse(&mut query) {
             Err(e) => return Err(e),
             Ok(q) => q,
@@ -250,7 +250,6 @@ impl Index {
             .map(|r| {
                 (
                     r.0.score,
-                    r.0.doc_id.to_string(),
                     // todo, don't read all of the data to memory, lazy load instead (some rust struct that can be returned?)
                     self.documents.get(&r.0.doc_id).unwrap().clone(), //todo remove this unwrap
                 )
