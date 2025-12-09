@@ -1,3 +1,4 @@
+use crate::documents::DocumentsManager;
 use crate::intersect::PostingListIntersection;
 use crate::mis::MinimalIntervalSemanticMatch;
 use crate::parser::Query;
@@ -5,8 +6,6 @@ use crate::scoring::{bm25, term_bm25};
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
-use crate::utils::writer::{DocLocation, DocumentsWriter};
-use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
 use pyo3::exceptions::{PyKeyError, PyOSError, PyValueError};
 use pyo3::prelude::*;
@@ -20,13 +19,6 @@ pub struct Posting {
     pub doc_id: Ulid,
     pub positions: Vec<u32>,
     pub score: f64,
-}
-
-#[derive(Decode, Encode, PartialEq, Debug)]
-pub struct Document {
-    pub id: [u8; 16], // binary representation of ULID
-    pub location: DocLocation,
-    pub tokens: Vec<u32>,
 }
 
 pub struct Result {
@@ -57,8 +49,7 @@ impl Eq for Result {}
 #[pyclass(name = "Index")]
 pub struct Index {
     index: HashMap<u32, Vec<Posting>>,
-    documents: HashMap<Ulid, Document>,
-    writer: DocumentsWriter,
+    documents: DocumentsManager,
     deleted_documents: HashSet<Ulid>,
     ulid_generator: Generator,
     tokenizer: Tokenizer,
@@ -76,13 +67,9 @@ impl Index {
             fuzzy_trie.init_automaton(i);
         }
 
-        let documents = DocumentsWriter::load(&dir)?;
-        println!("documents length: {}", documents.len());
-
         Ok(Self {
             index: HashMap::new(),
-            documents: documents,
-            writer: DocumentsWriter::new(dir)?,
+            documents: DocumentsManager::load(dir)?,
             deleted_documents: HashSet::with_capacity(100),
             ulid_generator: Generator::new(),
             tokenizer: Tokenizer::new(),
@@ -119,7 +106,7 @@ impl Index {
             tokens.push(token);
         }
 
-        let doc = match self.writer.write(doc_id, tokens, &doc) {
+        let doc = match self.documents.write(doc_id, tokens, &doc) {
             Ok(doc) => doc,
             Err(e) => {
                 return Err(PyOSError::new_err(format!(
@@ -154,7 +141,7 @@ impl Index {
             }
         };
 
-        match self.writer.read(doc) {
+        match doc.content() {
             Ok(val) => return Ok(val),
             Err(e) => {
                 return Err(PyValueError::new_err(format!(
@@ -176,13 +163,8 @@ impl Index {
             }
         };
 
-        let doc = match self.documents.get(&id) {
-            Some(doc) => doc,
-            None => return Ok(true),
-        };
-
         self.deleted_documents.insert(id);
-        self.writer.delete(&doc)?;
+        self.documents.delete(&id)?;
         if self.deleted_documents.len() >= self.documents.len() / 20 // if greater then 5% of all documents
             || self.deleted_documents.len() <= 1000
         {
@@ -278,21 +260,19 @@ impl Index {
                     r.0.score,
                     r.0.doc_id.to_string(),
                     // todo, don't read all of the data to memory, lazy load instead (some rust struct that can be returned?)
-                    self.writer
-                        .read(self.documents.get(&r.0.doc_id).unwrap())
-                        .unwrap(), //todo remove this
+                    self.documents.get(&r.0.doc_id).unwrap().content().unwrap(), //todo remove this unwrap
                 )
             })
             .collect())
     }
 
     fn flush(&mut self) -> PyResult<()> {
-        self.writer.flush()?;
+        self.documents.flush()?;
         Ok(())
     }
 
     fn merge(&mut self) -> PyResult<()> {
-        self.writer.merge()?;
+        self.documents.merge()?;
         Ok(())
     }
 }

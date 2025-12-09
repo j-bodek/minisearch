@@ -1,4 +1,3 @@
-use crate::index::Document;
 use bincode::config::Configuration;
 use bincode::enc::write::SizeWriter;
 use bincode::enc::EncoderImpl;
@@ -16,9 +15,33 @@ use std::{
 };
 use ulid::Ulid;
 
-static SEGMENT_THRESHOLD: u64 = 1 * 1024 * 1024;
+static SEGMENT_THRESHOLD: u64 = 50 * 1024 * 1024;
 static DOCUMENTS_BUFFER_THRESHOLD: u64 = 1024 * 1024;
 static MERGE_THRESHOLD: f64 = 0.3;
+
+#[derive(Decode, Encode, PartialEq, Debug)]
+pub struct Document {
+    pub id: [u8; 16], // binary representation of ULID
+    pub location: DocLocation,
+    pub tokens: Vec<u32>,
+}
+
+impl Document {
+    pub fn content(&self) -> Result<String, Box<dyn Error>> {
+        let DocLocation {
+            segment,
+            offset,
+            size,
+        } = &self.location;
+
+        let data = File::open(segment.join("data"))?;
+        let mut buf = vec![0u8; *size];
+        data.read_at(&mut buf, *offset)?;
+        let data = decompress_size_prepended(&buf)?;
+
+        Ok(String::from_utf8(data)?)
+    }
+}
 
 #[derive(Decode, Encode, PartialEq, Debug)]
 pub struct DocLocation {
@@ -97,18 +120,21 @@ impl Buffer {
     }
 }
 
-pub struct DocumentsWriter {
+pub struct DocumentsManager {
     pub dir: PathBuf,
+    pub docs: HashMap<Ulid, Document>,
     buffer: Buffer,
     segments: HashMap<PathBuf, Segment>,
     cur_segment: PathBuf,
 }
 
-impl DocumentsWriter {
-    pub fn new(dir: PathBuf) -> Result<Self, io::Error> {
-        let mut segments_map = HashMap::new();
+impl DocumentsManager {
+    pub fn load(dir: PathBuf) -> Result<Self, io::Error> {
+        let (mut documents, mut segments_map) = (HashMap::new(), HashMap::new());
+
         let cur_segment = match Self::segments(&dir)? {
             Some(segments) => {
+                let mut deletes = HashSet::new();
                 let cur_segment = segments
                     .iter()
                     .max_by(|(_, x), (_, y)| x.name.cmp(&y.name))
@@ -117,6 +143,36 @@ impl DocumentsWriter {
                     .clone();
 
                 for (path, segment) in segments {
+                    let mut del = File::open(path.join("del"))?;
+                    let del_size = del.metadata()?.len();
+
+                    while del.stream_position().unwrap() < del_size {
+                        let mut ulid = [0u8; 16];
+                        del.read_exact(&mut ulid)?;
+                        del.seek_relative(8)?; // skip 'deleted size'
+                        deletes.insert(Ulid::from_bytes(ulid));
+                    }
+
+                    let mut meta = File::open(path.join("meta"))?;
+                    let meta_size = meta.metadata()?.len();
+
+                    while meta.stream_position().unwrap() < meta_size {
+                        let mut size = [0u8; 8];
+                        meta.read_exact(&mut size)?;
+                        let size = u64::from_be_bytes(size);
+                        let mut doc = vec![0u8; size as usize];
+                        meta.read_exact(&mut doc)?;
+                        let (doc, _): (Document, usize) =
+                            bincode::decode_from_slice(&doc, bincode::config::standard()).unwrap();
+
+                        let ulid = Ulid::from_bytes(doc.id);
+                        if deletes.contains(&ulid) {
+                            continue;
+                        }
+
+                        documents.insert(Ulid::from_bytes(doc.id), doc);
+                    }
+
                     segments_map.insert(path, segment);
                 }
                 cur_segment
@@ -130,6 +186,7 @@ impl DocumentsWriter {
         };
 
         Ok(Self {
+            docs: documents,
             dir: dir,
             buffer: Buffer::new(),
             segments: segments_map,
@@ -137,43 +194,20 @@ impl DocumentsWriter {
         })
     }
 
-    pub fn load(dir: &PathBuf) -> Result<HashMap<Ulid, Document>, io::Error> {
-        let (mut documents, mut deletes) = (HashMap::new(), HashSet::new());
-        if let Some(segments) = Self::segments(&dir)? {
-            for (path, _) in segments {
-                let mut del = File::open(path.join("del"))?;
-                let del_size = del.metadata()?.len();
+    pub fn len(&self) -> usize {
+        return self.docs.len();
+    }
 
-                while del.stream_position().unwrap() < del_size {
-                    let mut ulid = [0u8; 16];
-                    del.read_exact(&mut ulid)?;
-                    del.seek_relative(8)?; // skip 'deleted size'
-                    deletes.insert(Ulid::from_bytes(ulid));
-                }
+    pub fn get(&self, id: &Ulid) -> Option<&Document> {
+        self.docs.get(id)
+    }
 
-                let mut meta = File::open(path.join("meta"))?;
-                let meta_size = meta.metadata()?.len();
+    pub fn insert(&mut self, id: Ulid, doc: Document) -> Option<Document> {
+        self.docs.insert(id, doc)
+    }
 
-                while meta.stream_position().unwrap() < meta_size {
-                    let mut size = [0u8; 8];
-                    meta.read_exact(&mut size)?;
-                    let size = u64::from_be_bytes(size);
-                    let mut doc = vec![0u8; size as usize];
-                    meta.read_exact(&mut doc)?;
-                    let (doc, _): (Document, usize) =
-                        bincode::decode_from_slice(&doc, bincode::config::standard()).unwrap();
-
-                    let ulid = Ulid::from_bytes(doc.id);
-                    if deletes.contains(&ulid) {
-                        continue;
-                    }
-
-                    documents.insert(Ulid::from_bytes(doc.id), doc);
-                }
-            }
-        }
-
-        return Ok(documents);
+    pub fn remove(&mut self, id: &Ulid) -> Option<Document> {
+        self.docs.remove(id)
     }
 
     pub fn write(
@@ -201,22 +235,12 @@ impl DocumentsWriter {
         return Ok(doc);
     }
 
-    pub fn read(&self, doc: &Document) -> Result<String, Box<dyn Error>> {
-        let DocLocation {
-            segment,
-            offset,
-            size,
-        } = &doc.location;
+    pub fn delete(&mut self, id: &Ulid) -> Result<(), io::Error> {
+        let doc = match self.docs.get(id) {
+            Some(doc) => doc,
+            None => return Ok(()),
+        };
 
-        let data = File::open(segment.join("data"))?;
-        let mut buf = vec![0u8; *size];
-        data.read_at(&mut buf, *offset)?;
-        let data = decompress_size_prepended(&buf)?;
-
-        Ok(String::from_utf8(data)?)
-    }
-
-    pub fn delete(&mut self, doc: &Document) -> Result<(), io::Error> {
         let mut deletes = File::options()
             .append(true)
             .open(doc.location.segment.join("del"))?;

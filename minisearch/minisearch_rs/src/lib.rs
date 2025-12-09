@@ -1,4 +1,5 @@
 pub mod automaton;
+pub mod documents;
 pub mod index;
 pub mod intersect;
 pub mod mis;
