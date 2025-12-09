@@ -1,4 +1,4 @@
-use crate::documents::DocumentsManager;
+use crate::documents::{Document, DocumentsManager};
 use crate::intersect::PostingListIntersection;
 use crate::mis::MinimalIntervalSemanticMatch;
 use crate::parser::Query;
@@ -141,15 +141,7 @@ impl Index {
             }
         };
 
-        match doc.content() {
-            Ok(val) => return Ok(val),
-            Err(e) => {
-                return Err(PyValueError::new_err(format!(
-                    "Error while reading document: {}",
-                    e.to_string()
-                )))
-            }
-        };
+        doc.content()
     }
 
     fn delete(&mut self, id: String) -> PyResult<bool> {
@@ -197,7 +189,7 @@ impl Index {
         Ok(true)
     }
 
-    fn search(&mut self, mut query: String, top_k: u8) -> PyResult<Vec<(f64, String, String)>> {
+    fn search(&mut self, mut query: String, top_k: u8) -> PyResult<Vec<(f64, String, Document)>> {
         let query = match Query::parse(&mut query) {
             Err(e) => return Err(e),
             Ok(q) => q,
@@ -260,7 +252,7 @@ impl Index {
                     r.0.score,
                     r.0.doc_id.to_string(),
                     // todo, don't read all of the data to memory, lazy load instead (some rust struct that can be returned?)
-                    self.documents.get(&r.0.doc_id).unwrap().content().unwrap(), //todo remove this unwrap
+                    self.documents.get(&r.0.doc_id).unwrap().clone(), //todo remove this unwrap
                 )
             })
             .collect())

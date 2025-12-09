@@ -4,6 +4,8 @@ use bincode::enc::EncoderImpl;
 use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
 use lz4_flex::block::{compress_into, decompress_size_prepended, get_maximum_output_size};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 use std::error::Error;
 use std::fs::remove_dir_all;
 use std::io::{self, prelude::*};
@@ -19,15 +21,17 @@ static SEGMENT_THRESHOLD: u64 = 50 * 1024 * 1024;
 static DOCUMENTS_BUFFER_THRESHOLD: u64 = 1024 * 1024;
 static MERGE_THRESHOLD: f64 = 0.3;
 
-#[derive(Decode, Encode, PartialEq, Debug)]
+#[pyclass(name = "Document")]
+#[derive(Decode, Encode, PartialEq, Debug, Clone)]
 pub struct Document {
     pub id: [u8; 16], // binary representation of ULID
     pub location: DocLocation,
     pub tokens: Vec<u32>,
 }
 
+#[pymethods]
 impl Document {
-    pub fn content(&self) -> Result<String, Box<dyn Error>> {
+    pub fn content(&self) -> PyResult<String> {
         let DocLocation {
             segment,
             offset,
@@ -37,13 +41,21 @@ impl Document {
         let data = File::open(segment.join("data"))?;
         let mut buf = vec![0u8; *size];
         data.read_at(&mut buf, *offset)?;
-        let data = decompress_size_prepended(&buf)?;
+        let data = match decompress_size_prepended(&buf) {
+            Ok(data) => data,
+            Err(err) => {
+                return Err(PyValueError::new_err(format!(
+                    "Failed to decompress document content: {}",
+                    err
+                )))
+            }
+        };
 
         Ok(String::from_utf8(data)?)
     }
 }
 
-#[derive(Decode, Encode, PartialEq, Debug)]
+#[derive(Decode, Encode, PartialEq, Debug, Clone)]
 pub struct DocLocation {
     pub segment: PathBuf,
     pub offset: u64,
