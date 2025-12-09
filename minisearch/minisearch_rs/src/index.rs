@@ -292,7 +292,7 @@ impl Index {
     }
 
     fn merge(&mut self) -> PyResult<()> {
-        self.writer.clean()?;
+        self.writer.merge()?;
         Ok(())
     }
 }

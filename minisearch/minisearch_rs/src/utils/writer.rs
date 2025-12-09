@@ -7,7 +7,6 @@ use hashbrown::{HashMap, HashSet};
 use lz4_flex::block::{compress_into, decompress_size_prepended, get_maximum_output_size};
 use std::error::Error;
 use std::fs::remove_dir_all;
-use std::hash::Hash;
 use std::io::{self, prelude::*};
 use std::os::unix::prelude::FileExt;
 use std::{
@@ -88,9 +87,9 @@ impl Buffer {
         match self.segment_size {
             Some(size) => Ok(size),
             None => {
-                let file = segment.join("segment");
-                let segment = File::options().append(true).open(&file)?;
-                let size = segment.metadata()?.len();
+                let file = segment.join("data");
+                let data = File::options().append(true).open(&file)?;
+                let size = data.metadata()?.len();
                 self.segment_size.replace(size);
                 Ok(size)
             }
@@ -107,117 +106,42 @@ pub struct DocumentsWriter {
 
 impl DocumentsWriter {
     pub fn new(dir: PathBuf) -> Result<Self, io::Error> {
-        let mut segments = HashMap::new();
-        let cur_segment = match fs::exists(&dir)? {
-            true => {
-                let mut segment = 0;
-                let mut segment_path = None;
-                for e in fs::read_dir(&dir)? {
-                    let path = e?.path();
-                    if !path.is_dir() {
-                        continue;
-                    }
+        let mut segments_map = HashMap::new();
+        let cur_segment = match Self::segments(&dir)? {
+            Some(segments) => {
+                let cur_segment = segments
+                    .iter()
+                    .max_by(|(_, x), (_, y)| x.name.cmp(&y.name))
+                    .unwrap()
+                    .0
+                    .clone();
 
-                    let name = match path
-                        .file_name()
-                        .unwrap()
-                        .to_os_string()
-                        .to_str()
-                        .unwrap()
-                        .parse::<u128>()
-                    {
-                        Ok(val) => val,
-                        Err(_) => continue,
-                    };
-
-                    let segment_file = File::open(&path.join("segment"))?;
-
-                    let mut del = File::open(path.join("del"))?;
-                    let del_size = del.metadata()?.len();
-                    let mut deleted = 0;
-
-                    while del.stream_position().unwrap() < del_size {
-                        let mut size = [0u8; 8];
-                        del.seek_relative(16)?; // skip 'ulid'
-                        del.read_exact(&mut size)?;
-                        deleted += u64::from_be_bytes(size);
-                    }
-
-                    segments.insert(
-                        path.clone(),
-                        Segment {
-                            name: name,
-                            size: segment_file.metadata()?.len(),
-                            deleted: deleted,
-                        },
-                    );
-
-                    if name > segment {
-                        segment = name;
-                        segment_path = Some(path);
-                    }
+                for (path, segment) in segments {
+                    segments_map.insert(path, segment);
                 }
-
-                match segment_path {
-                    Some(path) => path,
-                    None => Self::create_segment(&dir)?,
-                }
+                cur_segment
             }
-            false => {
+            None => {
                 fs::create_dir_all(&dir)?;
-                Self::create_segment(&dir)?
+                let (path, segment) = Self::create_segment(&dir)?;
+                segments_map.insert(path.clone(), segment);
+                path
             }
         };
 
         Ok(Self {
             dir: dir,
             buffer: Buffer::new(),
-            segments: segments,
+            segments: segments_map,
             cur_segment: cur_segment,
         })
     }
 
-    fn create_segment(dir: &PathBuf) -> Result<PathBuf, io::Error> {
-        // TODO: append new segment to segments
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .to_string();
-
-        let segment = Path::new(dir).join(ts);
-        fs::create_dir(&segment)?;
-
-        for f in ["segment", "meta", "del"] {
-            File::create(segment.join(f))?;
-        }
-
-        Ok(segment)
-    }
-
     pub fn load(dir: &PathBuf) -> Result<HashMap<Ulid, Document>, io::Error> {
         let (mut documents, mut deletes) = (HashMap::new(), HashSet::new());
-        if fs::exists(&dir)? {
-            for e in fs::read_dir(&dir)? {
-                let path = e?.path();
-                if !path.is_dir() {
-                    continue;
-                }
-
-                // TODO: properly validate if dir is timestamp
-                if let Err(_) = path
-                    .file_name()
-                    .unwrap()
-                    .to_os_string()
-                    .to_str()
-                    .unwrap()
-                    .parse::<u64>()
-                {
-                    continue;
-                };
-
-                let del = path.join("del");
-                let mut del = File::open(del)?;
+        if let Some(segments) = Self::segments(&dir)? {
+            for (path, _) in segments {
+                let mut del = File::open(path.join("del"))?;
                 let del_size = del.metadata()?.len();
 
                 while del.stream_position().unwrap() < del_size {
@@ -227,8 +151,7 @@ impl DocumentsWriter {
                     deletes.insert(Ulid::from_bytes(ulid));
                 }
 
-                let meta = path.join("meta");
-                let mut meta = File::open(meta)?;
+                let mut meta = File::open(path.join("meta"))?;
                 let meta_size = meta.metadata()?.len();
 
                 while meta.stream_position().unwrap() < meta_size {
@@ -248,7 +171,7 @@ impl DocumentsWriter {
                     documents.insert(Ulid::from_bytes(doc.id), doc);
                 }
             }
-        };
+        }
 
         return Ok(documents);
     }
@@ -285,18 +208,18 @@ impl DocumentsWriter {
             size,
         } = &doc.location;
 
-        let file = segment.join("segment");
-        let segment = File::open(&file)?;
+        let data = File::open(segment.join("data"))?;
         let mut buf = vec![0u8; *size];
-        segment.read_at(&mut buf, *offset)?;
+        data.read_at(&mut buf, *offset)?;
         let data = decompress_size_prepended(&buf)?;
 
         Ok(String::from_utf8(data)?)
     }
 
     pub fn delete(&mut self, doc: &Document) -> Result<(), io::Error> {
-        let file = doc.location.segment.join("del");
-        let mut deletes = File::options().append(true).open(&file)?;
+        let mut deletes = File::options()
+            .append(true)
+            .open(doc.location.segment.join("del"))?;
         deletes.write_all(&doc.id)?;
         deletes.write_all(&(doc.location.size as u64).to_be_bytes())?;
         if let Some(segment) = self.segments.get_mut(&doc.location.segment) {
@@ -306,20 +229,24 @@ impl DocumentsWriter {
     }
 
     pub fn flush(&mut self) -> Result<(), io::Error> {
-        let file = self.cur_segment.join("segment");
-        let mut segment = File::options().append(true).open(&file)?;
+        let mut data = File::options()
+            .append(true)
+            .open(self.cur_segment.join("data"))?;
 
-        let file = self.cur_segment.join("meta");
-        let mut meta = File::options().append(true).open(&file)?;
+        let mut meta = File::options()
+            .append(true)
+            .open(self.cur_segment.join("meta"))?;
 
         // flush data to disk
-        segment.write_all(&self.buffer.documents)?;
+        data.write_all(&self.buffer.documents)?;
         meta.write_all(&self.buffer.meta)?;
         self.buffer.reset();
         Ok(())
     }
 
-    pub fn clean(&mut self) -> Result<(), io::Error> {
+    pub fn merge(&mut self) -> Result<(), io::Error> {
+        // Merges the segments cleaning up deleted data
+
         let mut segments = self
             .segments
             .clone()
@@ -333,8 +260,7 @@ impl DocumentsWriter {
             }
 
             let mut deletes = HashSet::new();
-            let del = path.join("del");
-            let mut del = File::open(del)?;
+            let mut del = File::open(path.join("del"))?;
             let del_size = del.metadata()?.len();
 
             while del.stream_position().unwrap() < del_size {
@@ -344,11 +270,8 @@ impl DocumentsWriter {
                 deletes.insert(Ulid::from_bytes(ulid));
             }
 
-            let file = path.join("segment");
-            let segment = File::open(&file)?;
-
-            let meta = path.join("meta");
-            let mut meta = File::open(meta)?;
+            let data = File::open(path.join("data"))?;
+            let mut meta = File::open(path.join("meta"))?;
             let meta_size = meta.metadata()?.len();
 
             while meta.stream_position().unwrap() < meta_size {
@@ -367,7 +290,7 @@ impl DocumentsWriter {
 
                 let offset = self.buffer.documents.len();
                 self.buffer.documents.resize(offset + doc.location.size, 0);
-                segment.read_at(&mut self.buffer.documents[offset..], doc.location.offset)?;
+                data.read_at(&mut self.buffer.documents[offset..], doc.location.offset)?;
 
                 self.buffer.meta.extend(size_buf);
                 self.buffer.meta.extend(doc_buf);
@@ -385,7 +308,89 @@ impl DocumentsWriter {
         Ok(())
     }
 
+    fn create_segment(dir: &PathBuf) -> Result<(PathBuf, Segment), io::Error> {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
+        let segment = Path::new(dir).join(ts.to_string());
+        fs::create_dir(&segment)?;
+
+        for f in ["data", "meta", "del"] {
+            File::create(segment.join(f))?;
+        }
+
+        Ok((
+            segment,
+            Segment {
+                name: ts,
+                size: 0,
+                deleted: 0,
+            },
+        ))
+    }
+
+    fn segments(dir: &PathBuf) -> Result<Option<Vec<(PathBuf, Segment)>>, io::Error> {
+        match fs::exists(&dir)? {
+            true => {
+                let mut segments = vec![];
+                for e in fs::read_dir(&dir)? {
+                    let path = e?.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+
+                    let name = match path
+                        .file_name()
+                        .unwrap()
+                        .to_os_string()
+                        .to_str()
+                        .unwrap()
+                        .parse::<u128>()
+                    {
+                        Ok(val) => val,
+                        Err(_) => continue,
+                    };
+
+                    let data = File::open(&path.join("data"))?;
+                    let mut del = File::open(path.join("del"))?;
+
+                    let del_size = del.metadata()?.len();
+                    let mut deleted = 0;
+
+                    while del.stream_position().unwrap() < del_size {
+                        let mut size = [0u8; 8];
+                        del.seek_relative(16)?; // skip 'ulid'
+                        del.read_exact(&mut size)?;
+                        deleted += u64::from_be_bytes(size);
+                    }
+
+                    segments.push((
+                        path.clone(),
+                        Segment {
+                            name: name,
+                            size: data.metadata()?.len(),
+                            deleted: deleted,
+                        },
+                    ));
+                }
+
+                if segments.len() > 0 {
+                    Ok(Some(segments))
+                } else {
+                    Ok(None)
+                }
+            }
+            false => Ok(None),
+        }
+    }
+
     fn save_buffer(&mut self, segment_size: u64) -> Result<(), io::Error> {
+        if let Some(segment) = self.segments.get_mut(&self.cur_segment) {
+            segment.size = segment_size;
+        }
+
         if self.buffer.documents.len() as u64 > DOCUMENTS_BUFFER_THRESHOLD {
             self.flush()?;
         }
@@ -393,7 +398,9 @@ impl DocumentsWriter {
         // check if segment size exceded threshold - 100MB
         if segment_size > SEGMENT_THRESHOLD {
             self.flush()?;
-            self.cur_segment = Self::create_segment(&self.dir)?;
+            let (path, segment) = Self::create_segment(&self.dir)?;
+            self.segments.insert(path.clone(), segment);
+            self.cur_segment = path;
         }
 
         Ok(())
