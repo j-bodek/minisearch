@@ -1,6 +1,6 @@
+use hashbrown::HashMap;
 use nohash_hasher::BuildNoHashHasher;
 use std::cmp;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::vec::Vec;
 

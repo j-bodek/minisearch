@@ -279,6 +279,7 @@ impl DocumentsManager {
     }
 
     pub fn delete(&mut self, id: &Ulid) -> Result<(), io::Error> {
+        // TODO: buffer deletes, move deleted_documents to documents manager
         let doc = match self.docs.get(id) {
             Some(doc) => doc,
             None => return Ok(()),

@@ -1,4 +1,4 @@
-use crate::index::Posting;
+use crate::search::Posting;
 use hashbrown::HashMap;
 
 use crate::mis::MisResult;

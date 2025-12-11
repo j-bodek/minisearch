@@ -46,8 +46,8 @@ impl PartialEq for Result {
 
 impl Eq for Result {}
 
-#[pyclass(name = "Index")]
-pub struct Index {
+#[pyclass(name = "Search")]
+pub struct Search {
     index: HashMap<u32, Vec<Posting>>,
     documents: DocumentsManager,
     deleted_documents: HashSet<Ulid>,
@@ -59,7 +59,7 @@ pub struct Index {
 }
 
 #[pymethods]
-impl Index {
+impl Search {
     #[new]
     fn new(dir: PathBuf) -> PyResult<Self> {
         let mut fuzzy_trie = Trie::new();
@@ -157,6 +157,7 @@ impl Index {
 
         self.deleted_documents.insert(id);
         self.documents.delete(&id)?;
+
         if self.deleted_documents.len() >= self.documents.len() / 20 // if greater then 5% of all documents
             || self.deleted_documents.len() <= 1000
         {

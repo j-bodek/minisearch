@@ -1,5 +1,5 @@
-use crate::index::Posting;
 use crate::intersect::TokenDocPointer;
+use crate::search::Posting;
 use core::cmp::{Ordering, Reverse};
 use hashbrown::HashMap;
 use std::collections::BinaryHeap;
