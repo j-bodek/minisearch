@@ -3,6 +3,7 @@ use crate::tokenizer::TokenizedQuery;
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
 use hashbrown::HashMap;
+use nohash_hasher::BuildNoHashHasher;
 use std::cmp::{max, Ordering, Reverse};
 use std::collections::BinaryHeap;
 use ulid::Ulid;
@@ -17,7 +18,7 @@ pub struct TokenDocPointer {
 
 pub struct PostingListIntersection<'a> {
     query: TokenizedQuery,
-    index: &'a HashMap<u32, Vec<Posting>>,
+    index: &'a HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>,
     docs: Vec<Vec<TokenDocPointer>>,
     pointers: Vec<BinaryHeap<Reverse<TokenDocPointer>>>,
 }
@@ -45,7 +46,7 @@ impl Eq for TokenDocPointer {}
 impl<'a> PostingListIntersection<'a> {
     pub fn new(
         query: TokenizedQuery,
-        index: &'a HashMap<u32, Vec<Posting>>,
+        index: &'a HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>,
         hasher: &TokenHasher,
         fuzzy_trie: &Trie,
     ) -> Option<Self> {
@@ -93,7 +94,7 @@ impl<'a> PostingListIntersection<'a> {
     }
 
     fn next_docs(
-        index: &HashMap<u32, Vec<Posting>>,
+        index: &HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>,
         pointer: &mut BinaryHeap<Reverse<TokenDocPointer>>,
     ) -> (f64, Vec<TokenDocPointer>) {
         let (mut max_score, mut doc_ids) = (0 as f64, Vec::<TokenDocPointer>::new());
@@ -121,7 +122,7 @@ impl<'a> PostingListIntersection<'a> {
     }
 
     fn geq_docs(
-        index: &HashMap<u32, Vec<Posting>>,
+        index: &HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>,
         pointer: &mut BinaryHeap<Reverse<TokenDocPointer>>,
         target_doc: &Ulid,
     ) -> (f64, Vec<TokenDocPointer>) {

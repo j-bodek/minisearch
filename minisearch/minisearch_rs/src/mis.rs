@@ -2,6 +2,7 @@ use crate::index::Posting;
 use crate::intersect::TokenDocPointer;
 use core::cmp::{Ordering, Reverse};
 use hashbrown::HashMap;
+use nohash_hasher::BuildNoHashHasher;
 use std::collections::BinaryHeap;
 use std::slice::Iter;
 
@@ -151,7 +152,7 @@ impl<'a> TokenGroupIterator<'a> {
 
 impl<'a> MinimalIntervalSemanticMatch<'a> {
     pub fn new(
-        index: &'a HashMap<u32, Vec<Posting>>,
+        index: &'a HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>,
         pointers: Vec<Vec<TokenDocPointer>>,
         min_slop: i32,
     ) -> Self {

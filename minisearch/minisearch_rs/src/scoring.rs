@@ -1,5 +1,6 @@
 use crate::index::Posting;
 use hashbrown::HashMap;
+use nohash_hasher::BuildNoHashHasher;
 
 use crate::mis::MisResult;
 
@@ -26,7 +27,7 @@ pub fn bm25(
     docs_num: u64,
     doc_length: u32,
     avg_doc_length: f64,
-    index: &HashMap<u32, Vec<Posting>>,
+    index: &HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>,
     mis_result: MisResult,
 ) -> f64 {
     let mut score = 0.0;
