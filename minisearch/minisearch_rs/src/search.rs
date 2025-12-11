@@ -1,4 +1,5 @@
 use crate::documents::{Document, DocumentsManager};
+use crate::index::{IndexManager, Posting};
 use crate::intersect::PostingListIntersection;
 use crate::mis::MinimalIntervalSemanticMatch;
 use crate::parser::Query;
@@ -6,7 +7,7 @@ use crate::scoring::{bm25, term_bm25};
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 use pyo3::exceptions::{PyKeyError, PyOSError, PyValueError};
 use pyo3::prelude::*;
 use std::cmp::{Ordering, Reverse};
@@ -14,12 +15,6 @@ use std::collections::BinaryHeap;
 use std::path::PathBuf;
 use std::vec::Vec;
 use ulid::{Generator, Ulid};
-
-pub struct Posting {
-    pub doc_id: Ulid,
-    pub positions: Vec<u32>,
-    pub score: f64,
-}
 
 pub struct Result {
     pub doc_id: Ulid,
@@ -48,8 +43,8 @@ impl Eq for Result {}
 
 #[pyclass(name = "Search")]
 pub struct Search {
-    index: HashMap<u32, Vec<Posting>>,
-    documents: DocumentsManager,
+    index_manager: IndexManager,
+    documents_manager: DocumentsManager,
     deleted_documents: HashSet<Ulid>,
     ulid_generator: Generator,
     tokenizer: Tokenizer,
@@ -68,8 +63,8 @@ impl Search {
         }
 
         Ok(Self {
-            index: HashMap::new(),
-            documents: DocumentsManager::load(dir)?,
+            index_manager: IndexManager::load(&dir)?,
+            documents_manager: DocumentsManager::load(dir)?,
             deleted_documents: HashSet::with_capacity(100),
             ulid_generator: Generator::new(),
             tokenizer: Tokenizer::new(),
@@ -84,8 +79,9 @@ impl Search {
 
         let (tokens_num, tokens_map) = self.tokenizer.tokenize_doc(&mut doc);
 
-        self.avg_doc_len = (self.avg_doc_len * self.documents.len() as f64 + tokens_num as f64)
-            / (self.documents.len() as f64 + 1.0);
+        self.avg_doc_len = (self.avg_doc_len * self.documents_manager.docs.len() as f64
+            + tokens_num as f64)
+            / (self.documents_manager.docs.len() as f64 + 1.0);
 
         let mut tokens = Vec::with_capacity(tokens_num as usize);
         for (token, positions) in tokens_map {
@@ -95,27 +91,27 @@ impl Search {
                 doc_id: doc_id,
                 score: term_bm25(
                     positions.len() as u64,
-                    self.documents.len() as u64 + 1,
-                    self.index.entry(token).or_default().len() as u64 + 1,
+                    self.documents_manager.docs.len() as u64 + 1,
+                    self.index_manager.index.entry(token).or_default().len() as u64 + 1,
                     tokens_num,
                     self.avg_doc_len,
                 ),
                 positions: positions,
             };
-            self.index.entry(token).or_default().push(posting);
+            self.index_manager
+                .index
+                .entry(token)
+                .or_default()
+                .push(posting);
             tokens.push(token);
         }
 
-        let doc = match self.documents.write(doc_id, tokens, &doc) {
-            Ok(doc) => doc,
-            Err(e) => {
-                return Err(PyOSError::new_err(format!(
-                    "Failed to write document on disk: {}",
-                    e
-                )))
-            }
-        };
-        self.documents.insert(doc_id, doc);
+        if let Err(e) = self.documents_manager.write(doc_id, tokens, &doc) {
+            return Err(PyOSError::new_err(format!(
+                "Failed to write document on disk: {}",
+                e
+            )));
+        }
 
         Ok(doc_id.to_string())
     }
@@ -131,7 +127,7 @@ impl Search {
             }
         };
 
-        let doc = match self.documents.get(&id) {
+        let doc = match self.documents_manager.docs.get(&id) {
             Some(doc) => doc,
             None => {
                 return Err(PyKeyError::new_err(format!(
@@ -156,9 +152,9 @@ impl Search {
         };
 
         self.deleted_documents.insert(id);
-        self.documents.delete(&id)?;
+        self.documents_manager.delete(&id)?;
 
-        if self.deleted_documents.len() >= self.documents.len() / 20 // if greater then 5% of all documents
+        if self.deleted_documents.len() >= self.documents_manager.docs.len() / 20 // if greater then 5% of all documents
             || self.deleted_documents.len() <= 1000
         {
             return Ok(true);
@@ -166,13 +162,13 @@ impl Search {
 
         let mut tokens = HashSet::new();
         for d_id in self.deleted_documents.iter() {
-            if let Some(doc) = self.documents.remove(d_id) {
+            if let Some(doc) = self.documents_manager.docs.remove(d_id) {
                 tokens.extend(doc.tokens);
             }
         }
 
         for token in tokens {
-            let docs = match self.index.get_mut(&token) {
+            let docs = match self.index_manager.index.get_mut(&token) {
                 Some(docs) => docs,
                 _ => continue,
             };
@@ -180,7 +176,8 @@ impl Search {
             docs.retain(|doc| !self.deleted_documents.contains(&doc.doc_id));
 
             if docs.len() == 0 {
-                self.index.remove(&token);
+                // TODO: add delete method
+                self.index_manager.index.remove(&token);
                 self.fuzzy_trie.delete(self.hasher.delete(token).unwrap());
             }
         }
@@ -201,7 +198,7 @@ impl Search {
 
         let intersection = match PostingListIntersection::new(
             query,
-            &self.index,
+            &self.index_manager.index,
             &self.hasher,
             &self.fuzzy_trie,
         ) {
@@ -217,13 +214,19 @@ impl Search {
                 continue;
             }
 
-            for mis_result in MinimalIntervalSemanticMatch::new(&self.index, pointers, slop as i32)
+            for mis_result in
+                MinimalIntervalSemanticMatch::new(&self.index_manager.index, pointers, slop as i32)
             {
                 score = bm25(
-                    self.documents.len() as u64,
-                    self.documents.get(&doc_id).unwrap().tokens.len() as u32,
+                    self.documents_manager.docs.len() as u64,
+                    self.documents_manager
+                        .docs
+                        .get(&doc_id)
+                        .unwrap()
+                        .tokens
+                        .len() as u32,
                     self.avg_doc_len,
-                    &self.index,
+                    &self.index_manager.index,
                     mis_result,
                 )
                 .max(score);
@@ -252,19 +255,23 @@ impl Search {
                 (
                     r.0.score,
                     // todo, don't read all of the data to memory, lazy load instead (some rust struct that can be returned?)
-                    self.documents.get(&r.0.doc_id).unwrap().clone(), //todo remove this unwrap
+                    self.documents_manager
+                        .docs
+                        .get(&r.0.doc_id)
+                        .unwrap()
+                        .clone(), //todo remove this unwrap
                 )
             })
             .collect())
     }
 
     fn flush(&mut self) -> PyResult<()> {
-        self.documents.flush()?;
+        self.documents_manager.flush()?;
         Ok(())
     }
 
     fn merge(&mut self) -> PyResult<()> {
-        self.documents.merge()?;
+        self.documents_manager.merge()?;
         Ok(())
     }
 }

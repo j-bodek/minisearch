@@ -1,4 +1,4 @@
-use crate::search::Posting;
+use crate::index::Posting;
 use crate::tokenizer::TokenizedQuery;
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;

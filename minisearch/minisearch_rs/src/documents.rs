@@ -257,7 +257,7 @@ impl DocumentsManager {
         id: Ulid,
         tokens: Vec<u32>,
         content: &str,
-    ) -> Result<Document, Box<dyn Error>> {
+    ) -> Result<(), Box<dyn Error>> {
         // write segment to buffer
         let (data_offset, size) = self.buffer.write_document(&content);
         let offset = self.buffer.segment_size(&self.cur_segment)? + data_offset as u64;
@@ -275,7 +275,9 @@ impl DocumentsManager {
         self.buffer.write_meta(&doc)?;
         self.save_buffer(offset + size as u64)?;
 
-        return Ok(doc);
+        self.docs.insert(id, doc);
+
+        return Ok(());
     }
 
     pub fn delete(&mut self, id: &Ulid) -> Result<(), io::Error> {
