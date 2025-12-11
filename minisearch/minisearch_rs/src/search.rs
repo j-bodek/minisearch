@@ -98,11 +98,7 @@ impl Search {
                 ),
                 positions: positions,
             };
-            self.index_manager
-                .index
-                .entry(token)
-                .or_default()
-                .push(posting);
+            self.index_manager.insert(token, posting);
             tokens.push(token);
         }
 
@@ -167,20 +163,12 @@ impl Search {
             }
         }
 
-        for token in tokens {
-            let docs = match self.index_manager.index.get_mut(&token) {
-                Some(docs) => docs,
-                _ => continue,
-            };
-
-            docs.retain(|doc| !self.deleted_documents.contains(&doc.doc_id));
-
-            if docs.len() == 0 {
-                // TODO: add delete method
-                self.index_manager.index.remove(&token);
-                self.fuzzy_trie.delete(self.hasher.delete(token).unwrap());
-            }
-        }
+        self.index_manager.delete(
+            &tokens,
+            &self.deleted_documents,
+            &mut self.fuzzy_trie,
+            &mut self.hasher,
+        );
 
         self.deleted_documents.drain();
 
