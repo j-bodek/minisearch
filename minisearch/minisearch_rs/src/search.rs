@@ -169,12 +169,17 @@ impl Search {
             }
         }
 
-        self.index_manager.delete(
+        if let Err(e) = self.index_manager.delete(
             &tokens,
             &self.deleted_documents,
             &mut self.fuzzy_trie,
             &mut self.hasher,
-        );
+        ) {
+            return Err(PyOSError::new_err(format!(
+                "Failed to delete document from index {}",
+                e
+            )));
+        }
 
         self.deleted_documents.drain();
 
@@ -261,6 +266,7 @@ impl Search {
 
     fn flush(&mut self) -> PyResult<()> {
         self.documents_manager.flush()?;
+        self.index_manager.flush()?;
         Ok(())
     }
 

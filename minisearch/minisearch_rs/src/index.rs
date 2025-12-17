@@ -146,7 +146,7 @@ impl Buffer {
         match self.index_size {
             Some(size) => Ok(size),
             None => {
-                let index = File::options().open(&self.dir.join("index"))?;
+                let index = File::open(&self.dir.join("index"))?;
                 self.index_size.replace(index.metadata()?.len());
                 Ok(self.index_size.unwrap())
             }
@@ -158,7 +158,7 @@ impl Buffer {
 
         let meta = LogMeta {
             id: doc_id,
-            offset: self.get_index_size().unwrap() + offset as u64,
+            offset: self.get_index_size()? + offset as u64,
             size: size as u32,
         };
         meta.encode_into_vec(&mut self.meta);
@@ -206,6 +206,10 @@ impl LogsManager {
 
         Ok(())
     }
+
+    fn flush(&mut self) -> Result<(), io::Error> {
+        self.buffer.flush()
+    }
 }
 
 #[derive(Decode, Encode, PartialEq, Debug, Clone)]
@@ -244,21 +248,45 @@ impl IndexManager {
         document_ids: &HashSet<Ulid>,
         fuzzy_trie: &mut Trie,
         hasher: &mut TokenHasher,
-    ) {
-        // TODO: add serialization and write to file logic
+    ) -> Result<(), Box<dyn Error>> {
         for token in tokens {
-            let docs = match self.index.get_mut(token) {
-                Some(docs) => docs,
+            let postings = match self.index.get_mut(token) {
+                Some(postings) => postings,
                 _ => continue,
             };
 
-            // TODO: write filtered out postings as logs
-            docs.retain(|doc| !document_ids.contains(&Ulid(doc.doc_id)));
+            let (len, mut deleted) = (postings.len(), 0);
+            let mut error = None;
 
-            if docs.len() == 0 {
+            postings.retain(|doc| {
+                if document_ids.contains(&Ulid(doc.doc_id)) {
+                    deleted += 1;
+                    if let Err(err) = self
+                        .logs_manager
+                        .write(doc.doc_id, DeleteLog::new(*token, (len - deleted) as u32))
+                    {
+                        error.replace(err);
+                    };
+                    return false;
+                }
+
+                true
+            });
+
+            if let Some(err) = error {
+                return Err(err);
+            }
+
+            if postings.len() == 0 {
                 self.index.remove(token);
                 fuzzy_trie.delete(hasher.delete(*token).unwrap());
             }
         }
+
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> Result<(), io::Error> {
+        self.logs_manager.flush()
     }
 }
