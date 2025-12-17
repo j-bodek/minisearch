@@ -69,7 +69,7 @@ impl<'a> PostingListIntersection<'a> {
                 };
 
                 let pointer = TokenDocPointer {
-                    doc_id: index.get(&token).unwrap()[0].doc_id,
+                    doc_id: Ulid(index.get(&token).unwrap()[0].doc_id),
                     doc_idx: 0,
                     token: token,
                     distance: distance,
@@ -104,7 +104,7 @@ impl<'a> PostingListIntersection<'a> {
             let p = pointer.pop().unwrap();
             if p.0.doc_idx + 1 <= index.get(&p.0.token).unwrap().len() as u32 - 1 {
                 pointer.push(Reverse(TokenDocPointer {
-                    doc_id: index.get(&p.0.token).unwrap()[p.0.doc_idx as usize + 1].doc_id,
+                    doc_id: Ulid(index.get(&p.0.token).unwrap()[p.0.doc_idx as usize + 1].doc_id),
                     doc_idx: p.0.doc_idx + 1,
                     token: p.0.token.clone(),
                     distance: p.0.distance,
@@ -131,7 +131,7 @@ impl<'a> PostingListIntersection<'a> {
             let new_idx = match index
                 .get(&doc.0.token)
                 .unwrap()
-                .binary_search_by(|posting| posting.doc_id.cmp(target_doc))
+                .binary_search_by(|posting| posting.doc_id.cmp(&target_doc.0))
             {
                 Ok(idx) => idx,
                 Err(idx) => idx,
@@ -139,7 +139,7 @@ impl<'a> PostingListIntersection<'a> {
 
             if new_idx <= index.get(&doc.0.token).unwrap().len() - 1 {
                 pointer.push(Reverse(TokenDocPointer {
-                    doc_id: index.get(&doc.0.token).unwrap()[new_idx].doc_id,
+                    doc_id: Ulid(index.get(&doc.0.token).unwrap()[new_idx].doc_id),
                     doc_idx: new_idx as u32,
                     token: doc.0.token.clone(),
                     distance: doc.0.distance,

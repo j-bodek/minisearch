@@ -88,7 +88,7 @@ impl Search {
             self.fuzzy_trie.add(&token);
             let token = self.hasher.add(token);
             let posting = Posting {
-                doc_id: doc_id,
+                doc_id: doc_id.0,
                 score: term_bm25(
                     positions.len() as u64,
                     self.documents_manager.docs.len() as u64 + 1,
