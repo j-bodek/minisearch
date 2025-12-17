@@ -98,7 +98,13 @@ impl Search {
                 ),
                 positions: positions,
             };
-            self.index_manager.insert(token, posting);
+            if let Err(e) = self.index_manager.insert(token, posting) {
+                return Err(PyOSError::new_err(format!(
+                    "Failed to write index on disk: {}",
+                    e
+                )));
+            };
+
             tokens.push(token);
         }
 
