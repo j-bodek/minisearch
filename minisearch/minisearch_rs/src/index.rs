@@ -5,6 +5,8 @@ use std::array::TryFromSliceError;
 use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
+use std::marker::PhantomData;
+use std::os::unix::fs::FileExt;
 use std::{io, path::PathBuf};
 
 use bincode::config::Configuration;
@@ -56,6 +58,7 @@ enum LogOperation {
 }
 
 trait IndexLog: Debug {
+    fn from_bytes(bytes: &mut [u8]) -> Self;
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError>;
 }
 
@@ -88,6 +91,10 @@ struct AddLog<'a> {
 }
 
 impl<'a> IndexLog for AddLog<'a> {
+    fn from_bytes(bytes: &mut [u8]) -> Self {
+        !todo!()
+    }
+
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError> {
         let offset = vec.len();
 
@@ -132,6 +139,10 @@ struct DeleteLog {
 }
 
 impl IndexLog for DeleteLog {
+    fn from_bytes(bytes: &mut [u8]) -> Self {
+        !todo!()
+    }
+
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError> {
         let offset = vec.len();
         let header_size = self.header.encode_into_vec(vec);
@@ -211,7 +222,7 @@ struct MetaReader {
 }
 
 impl MetaReader {
-    fn new(file_path: &PathBuf, direction: ReadDirection) -> Result<Self, io::Error> {
+    fn new(file_path: PathBuf, direction: ReadDirection) -> Result<Self, io::Error> {
         let file = File::open(file_path).unwrap();
         let file_size = file.metadata().unwrap().len();
         let offset = if let ReadDirection::FORWARD = direction {
@@ -259,6 +270,43 @@ impl Iterator for MetaReader {
     }
 }
 
+struct LogsReader<T: IndexLog> {
+    _marker: PhantomData<T>,
+    file: File,
+    meta_reader: MetaReader,
+}
+
+impl<T: IndexLog> LogsReader<T> {
+    fn new(index_dir: &PathBuf, direction: ReadDirection) -> Result<Self, io::Error> {
+        Ok(Self {
+            _marker: PhantomData,
+            file: File::open(index_dir.join("index"))?,
+            meta_reader: MetaReader::new(index_dir.join("meta"), direction)?,
+        })
+    }
+}
+
+impl<T: IndexLog> Iterator for LogsReader<T> {
+    type Item = Result<T, io::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let meta = match self.meta_reader.next() {
+            Some(m) => match m {
+                Ok(log) => log,
+                Err(e) => return Some(Err(e)),
+            },
+            None => return None,
+        };
+
+        let mut buf = vec![0u8; meta.size as usize];
+        if let Err(e) = self.file.read_exact_at(&mut buf, meta.offset) {
+            return Some(Err(e));
+        };
+
+        None
+    }
+}
+
 struct LogsManager {
     buffer: Buffer,
 }
@@ -285,6 +333,8 @@ impl LogsManager {
         Ok(())
     }
 
+    fn read(&mut self, direction: ReadDirection) {}
+
     fn flush(&mut self) -> Result<(), io::Error> {
         self.buffer.flush()
     }
@@ -304,12 +354,14 @@ pub struct IndexManager {
 
 impl IndexManager {
     pub fn load(dir: &PathBuf) -> Result<Self, io::Error> {
-        let index_dir = dir.join("index");
-
         // TODO: implement load functionality
+        // let reader = MetaReader::new(dir.join("index"), ReadDirection::BACKWARD)?;
+        // for m in reader {
+        //     let meta = m?;
+        // }
 
         Ok(Self {
-            logs_manager: LogsManager::new(index_dir),
+            logs_manager: LogsManager::new(dir.join("index")),
             index: HashMap::default(),
         })
     }
