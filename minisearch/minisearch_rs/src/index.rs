@@ -1,9 +1,10 @@
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
 
+use std::array::TryFromSliceError;
 use std::error::Error;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Seek, Write};
 use std::{io, path::PathBuf};
 
 use bincode::config::Configuration;
@@ -13,11 +14,13 @@ use bincode::error::EncodeError;
 use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
 use nohash_hasher::BuildNoHashHasher;
+use std::fmt::Debug;
 
 use ulid::Ulid;
 
 static BUFFER_THRESHOLD: u64 = 1024 * 1024;
 
+#[derive(Debug)]
 struct LogMeta {
     id: u128,
     offset: u64,
@@ -25,8 +28,18 @@ struct LogMeta {
 }
 
 impl LogMeta {
+    const ENCODED_SIZE: usize = 28;
+
+    fn from_bytes(bytes: [u8; Self::ENCODED_SIZE]) -> Result<Self, TryFromSliceError> {
+        Ok(Self {
+            id: u128::from_be_bytes(bytes[..16].try_into()?),
+            offset: u64::from_be_bytes(bytes[16..24].try_into()?),
+            size: u32::from_be_bytes(bytes[24..].try_into()?),
+        })
+    }
+
     fn encode_into_vec(&self, vec: &mut Vec<u8>) {
-        let (size, offset) = (28, vec.len());
+        let (size, offset) = (Self::ENCODED_SIZE, vec.len());
 
         vec.resize(offset + size, 0);
         vec[offset..offset + 16].copy_from_slice(&self.id.to_be_bytes());
@@ -36,16 +49,17 @@ impl LogMeta {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 enum LogOperation {
     DELETE = 0,
     ADD = 1,
 }
 
-trait IndexLog {
+trait IndexLog: Debug {
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError>;
 }
 
+#[derive(Debug)]
 struct LogHeader {
     token: u32,
     operation: LogOperation,
@@ -53,19 +67,21 @@ struct LogHeader {
 }
 
 impl LogHeader {
+    const ENCODED_SIZE: usize = 9;
+
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> usize {
-        let head_size = 9;
         let offset = vec.len();
 
-        vec.resize(offset + head_size, 0);
+        vec.resize(offset + Self::ENCODED_SIZE, 0);
         vec[offset..offset + 4].copy_from_slice(&self.token.to_be_bytes());
         vec[offset + 4..offset + 5].copy_from_slice(&(self.operation as u8).to_be_bytes());
         vec[offset + 5..offset + 9].copy_from_slice(&self.size.to_be_bytes());
 
-        head_size
+        Self::ENCODED_SIZE
     }
 }
 
+#[derive(Debug)]
 struct AddLog<'a> {
     header: LogHeader,
     postings: &'a Posting,
@@ -110,6 +126,7 @@ impl<'a> AddLog<'a> {
     }
 }
 
+#[derive(Debug)]
 struct DeleteLog {
     header: LogHeader,
 }
@@ -181,6 +198,67 @@ impl Buffer {
     }
 }
 
+enum ReadDirection {
+    FORWARD,
+    BACKWARD,
+}
+
+struct MetaReader {
+    file: File,
+    file_size: u64,
+    offset: i64,
+    direction: ReadDirection,
+}
+
+impl MetaReader {
+    fn new(file_path: &PathBuf, direction: ReadDirection) -> Result<Self, io::Error> {
+        let file = File::open(file_path).unwrap();
+        let file_size = file.metadata().unwrap().len();
+        let offset = if let ReadDirection::FORWARD = direction {
+            0
+        } else {
+            file_size as i64 - LogMeta::ENCODED_SIZE as i64
+        };
+
+        Ok(Self {
+            file: file,
+            file_size: file_size,
+            offset: offset,
+            direction: direction,
+        })
+    }
+}
+
+impl Iterator for MetaReader {
+    type Item = Result<LogMeta, io::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut buf = [0u8; LogMeta::ENCODED_SIZE];
+        match self.direction {
+            ReadDirection::FORWARD => {
+                if self.file.stream_position().unwrap() >= self.file_size {
+                    return None;
+                }
+            }
+            ReadDirection::BACKWARD => {
+                if self.offset < 0 {
+                    return None;
+                }
+                if let Err(e) = self.file.seek(io::SeekFrom::Start(self.offset as u64)) {
+                    return Some(Err(e));
+                };
+                self.offset -= LogMeta::ENCODED_SIZE as i64;
+            }
+        }
+
+        if let Err(e) = self.file.read_exact(&mut buf) {
+            return Some(Err(e));
+        };
+
+        Some(Ok(LogMeta::from_bytes(buf).unwrap()))
+    }
+}
+
 struct LogsManager {
     buffer: Buffer,
 }
@@ -226,9 +304,12 @@ pub struct IndexManager {
 
 impl IndexManager {
     pub fn load(dir: &PathBuf) -> Result<Self, io::Error> {
+        let index_dir = dir.join("index");
+
         // TODO: implement load functionality
+
         Ok(Self {
-            logs_manager: LogsManager::new(dir.join("index")),
+            logs_manager: LogsManager::new(index_dir),
             index: HashMap::default(),
         })
     }

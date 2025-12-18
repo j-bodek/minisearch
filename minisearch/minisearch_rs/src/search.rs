@@ -162,28 +162,7 @@ impl Search {
             return Ok(true);
         }
 
-        let mut tokens = HashSet::new();
-        for d_id in self.deleted_documents.iter() {
-            if let Some(doc) = self.documents_manager.docs.remove(d_id) {
-                tokens.extend(doc.tokens);
-            }
-        }
-
-        if let Err(e) = self.index_manager.delete(
-            &tokens,
-            &self.deleted_documents,
-            &mut self.fuzzy_trie,
-            &mut self.hasher,
-        ) {
-            return Err(PyOSError::new_err(format!(
-                "Failed to delete document from index {}",
-                e
-            )));
-        }
-
-        self.deleted_documents.drain();
-
-        Ok(true)
+        self.force_delete()
     }
 
     fn search(&mut self, mut query: String, top_k: u8) -> PyResult<Vec<(f64, Document)>> {
@@ -265,6 +244,7 @@ impl Search {
     }
 
     fn flush(&mut self) -> PyResult<()> {
+        self.force_delete()?;
         self.documents_manager.flush()?;
         self.index_manager.flush()?;
         Ok(())
@@ -273,5 +253,32 @@ impl Search {
     fn merge(&mut self) -> PyResult<()> {
         self.documents_manager.merge()?;
         Ok(())
+    }
+}
+
+impl Search {
+    fn force_delete(&mut self) -> PyResult<bool> {
+        let mut tokens = HashSet::new();
+        for d_id in self.deleted_documents.iter() {
+            if let Some(doc) = self.documents_manager.docs.remove(d_id) {
+                tokens.extend(doc.tokens);
+            }
+        }
+
+        if let Err(e) = self.index_manager.delete(
+            &tokens,
+            &self.deleted_documents,
+            &mut self.fuzzy_trie,
+            &mut self.hasher,
+        ) {
+            return Err(PyOSError::new_err(format!(
+                "Failed to delete document from index {}",
+                e
+            )));
+        }
+
+        self.deleted_documents.drain();
+
+        Ok(true)
     }
 }
