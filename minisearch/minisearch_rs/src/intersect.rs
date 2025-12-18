@@ -68,8 +68,13 @@ impl<'a> PostingListIntersection<'a> {
                     _ => continue,
                 };
 
+                let postings = match index.get(&token) {
+                    Some(val) => val,
+                    _ => continue,
+                };
+
                 let pointer = TokenDocPointer {
-                    doc_id: Ulid(index.get(&token).unwrap()[0].doc_id),
+                    doc_id: Ulid(postings[0].doc_id),
                     doc_idx: 0,
                     token: token,
                     distance: distance,
@@ -80,9 +85,6 @@ impl<'a> PostingListIntersection<'a> {
             if pointers[i].is_empty() {
                 return None;
             }
-
-            // let (_, doc) = Self::next_docs(index, pointers.get_mut(&query_token.text).unwrap());
-            // docs.push(doc);
         }
 
         Some(Self {
