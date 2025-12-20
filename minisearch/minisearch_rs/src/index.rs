@@ -2,6 +2,7 @@ use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
 
 use std::array::TryFromSliceError;
+use std::borrow::Cow;
 use std::error::Error;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
@@ -17,6 +18,7 @@ use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
 use nohash_hasher::BuildNoHashHasher;
 use std::fmt::Debug;
+use thiserror::Error;
 
 use ulid::Ulid;
 
@@ -57,27 +59,64 @@ enum LogOperation {
     ADD = 1,
 }
 
+// TODO: create proper errors later
+#[derive(Error, Debug)]
+enum FromBytesError {
+    #[error("Failed to convert data from slice")]
+    TryFromSliceError(#[from] TryFromSliceError),
+    #[error("Failed to decode data")]
+    DecodeError,
+}
+
+impl LogOperation {
+    fn from_u8(val: u8) -> Result<Self, FromBytesError> {
+        match val {
+            0 => Ok(Self::DELETE),
+            1 => Ok(Self::ADD),
+            _ => Err(FromBytesError::DecodeError),
+        }
+    }
+}
+
 trait IndexLog: Debug {
-    fn from_bytes(bytes: &mut [u8]) -> Self;
+    fn from_bytes(bytes: &mut [u8]) -> Self
+    where
+        Self: Sized;
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError>;
+}
+
+fn decode_log(bytes: &mut [u8]) -> Result<Box<dyn IndexLog>, FromBytesError> {
+    let operation = LogOperation::from_u8(u8::from_be_bytes(bytes[..1].try_into()?))?;
+    match operation {
+        LogOperation::ADD => Ok(Box::new(AddLog::from_bytes(bytes))),
+        LogOperation::DELETE => Ok(Box::new(DeleteLog::from_bytes(bytes))),
+    }
 }
 
 #[derive(Debug)]
 struct LogHeader {
-    token: u32,
     operation: LogOperation,
+    token: u32,
     size: u32,
 }
 
 impl LogHeader {
     const ENCODED_SIZE: usize = 9;
 
+    fn from_bytes(bytes: [u8; Self::ENCODED_SIZE]) -> Result<Self, FromBytesError> {
+        Ok(Self {
+            operation: LogOperation::from_u8(u8::from_be_bytes(bytes[..1].try_into()?))?,
+            token: u32::from_be_bytes(bytes[1..5].try_into()?),
+            size: u32::from_be_bytes(bytes[5..].try_into()?),
+        })
+    }
+
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> usize {
         let offset = vec.len();
 
         vec.resize(offset + Self::ENCODED_SIZE, 0);
-        vec[offset..offset + 4].copy_from_slice(&self.token.to_be_bytes());
-        vec[offset + 4..offset + 5].copy_from_slice(&(self.operation as u8).to_be_bytes());
+        vec[offset..offset + 1].copy_from_slice(&(self.operation as u8).to_be_bytes());
+        vec[offset + 1..offset + 5].copy_from_slice(&self.token.to_be_bytes());
         vec[offset + 5..offset + 9].copy_from_slice(&self.size.to_be_bytes());
 
         Self::ENCODED_SIZE
@@ -87,12 +126,23 @@ impl LogHeader {
 #[derive(Debug)]
 struct AddLog<'a> {
     header: LogHeader,
-    postings: &'a Posting,
+    posting: Cow<'a, Posting>,
 }
 
 impl<'a> IndexLog for AddLog<'a> {
     fn from_bytes(bytes: &mut [u8]) -> Self {
-        !todo!()
+        let header =
+            LogHeader::from_bytes(bytes[..LogHeader::ENCODED_SIZE].try_into().unwrap()).unwrap();
+        let (posting, _): (Posting, usize) = bincode::decode_from_slice(
+            &bytes[LogHeader::ENCODED_SIZE..],
+            bincode::config::standard(),
+        )
+        .unwrap();
+
+        Self {
+            header: header,
+            posting: Cow::Owned(posting),
+        }
     }
 
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError> {
@@ -104,13 +154,13 @@ impl<'a> IndexLog for AddLog<'a> {
         let posting_size = {
             let mut size_writer =
                 EncoderImpl::<_, Configuration>::new(SizeWriter::default(), config);
-            self.postings.encode(&mut size_writer)?;
+            self.posting.encode(&mut size_writer)?;
             size_writer.into_writer().bytes_written
         };
 
         vec.resize(offset + header_size + posting_size, 0);
         let posting_size =
-            bincode::encode_into_slice(self.postings, &mut vec[offset + header_size..], config)
+            bincode::encode_into_slice(&self.posting, &mut vec[offset + header_size..], config)
                 .unwrap();
 
         vec.truncate(offset + header_size + posting_size);
@@ -121,14 +171,14 @@ impl<'a> IndexLog for AddLog<'a> {
 }
 
 impl<'a> AddLog<'a> {
-    fn new(token: u32, size: u32, postings: &'a Posting) -> Self {
+    fn new(token: u32, size: u32, posting: &'a Posting) -> Self {
         Self {
             header: LogHeader {
                 token: token,
                 operation: LogOperation::ADD,
                 size: size,
             },
-            postings: postings,
+            posting: Cow::Borrowed(posting),
         }
     }
 }
@@ -140,7 +190,10 @@ struct DeleteLog {
 
 impl IndexLog for DeleteLog {
     fn from_bytes(bytes: &mut [u8]) -> Self {
-        !todo!()
+        // TODO: proper error handling
+        Self {
+            header: LogHeader::from_bytes(bytes.try_into().unwrap()).unwrap(),
+        }
     }
 
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError> {
@@ -270,24 +323,22 @@ impl Iterator for MetaReader {
     }
 }
 
-struct LogsReader<T: IndexLog> {
-    _marker: PhantomData<T>,
+struct LogsReader {
     file: File,
     meta_reader: MetaReader,
 }
 
-impl<T: IndexLog> LogsReader<T> {
+impl LogsReader {
     fn new(index_dir: &PathBuf, direction: ReadDirection) -> Result<Self, io::Error> {
         Ok(Self {
-            _marker: PhantomData,
             file: File::open(index_dir.join("index"))?,
             meta_reader: MetaReader::new(index_dir.join("meta"), direction)?,
         })
     }
 }
 
-impl<T: IndexLog> Iterator for LogsReader<T> {
-    type Item = Result<T, io::Error>;
+impl Iterator for LogsReader {
+    type Item = Result<Box<dyn IndexLog>, io::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let meta = match self.meta_reader.next() {
@@ -303,7 +354,13 @@ impl<T: IndexLog> Iterator for LogsReader<T> {
             return Some(Err(e));
         };
 
-        None
+        // let log = decode_log(&mut buf).unwrap();
+        let log = match decode_log(&mut buf) {
+            Ok(log) => log,
+            Err(e) => return None,
+        };
+
+        Some(Ok(log))
     }
 }
 
@@ -355,10 +412,11 @@ pub struct IndexManager {
 impl IndexManager {
     pub fn load(dir: &PathBuf) -> Result<Self, io::Error> {
         // TODO: implement load functionality
-        // let reader = MetaReader::new(dir.join("index"), ReadDirection::BACKWARD)?;
-        // for m in reader {
-        //     let meta = m?;
-        // }
+        let reader = LogsReader::new(&dir.join("index"), ReadDirection::BACKWARD)?;
+        for l in reader {
+            let l = l?;
+            println!("log: {:?}", l);
+        }
 
         Ok(Self {
             logs_manager: LogsManager::new(dir.join("index")),
