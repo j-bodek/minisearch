@@ -7,39 +7,106 @@ use crate::scoring::{bm25, term_bm25};
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
+use bincode::{Decode, Encode};
 use hashbrown::HashSet;
 use pyo3::exceptions::{PyKeyError, PyOSError, PyValueError};
 use pyo3::prelude::*;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
+use std::fs::{self, File};
+use std::io;
 use std::path::PathBuf;
 use std::vec::Vec;
 use ulid::{Generator, Ulid};
 
-pub struct Result {
+const SEARCH_META_OPERATIONS_THRESHOLD: u32 = 100_000;
+
+#[derive(Decode, Encode, PartialEq, Debug, Clone)]
+struct SearchMetaData {
+    avg_doc_len: f64,
+}
+
+struct SearchMeta {
+    path: PathBuf,
+    operations: u32,
+    data: SearchMetaData,
+}
+
+impl SearchMeta {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path: path,
+            operations: 0,
+            data: SearchMetaData { avg_doc_len: 0.0 },
+        }
+    }
+
+    fn load(path: PathBuf) -> Result<Self, io::Error> {
+        if !fs::exists(&path)? {
+            File::create(&path)?;
+            return Ok(Self::new(path));
+        }
+
+        let mut file = File::open(&path)?;
+        let data: SearchMetaData =
+            match bincode::decode_from_std_read(&mut file, bincode::config::standard()) {
+                Ok(data) => data,
+                Err(e) => {
+                    println!("Warning metadata decode error: {e}");
+                    return Ok(Self::new(path));
+                }
+            };
+
+        Ok(Self {
+            path: path,
+            operations: 0,
+            data: data,
+        })
+    }
+
+    fn update_avg_doc_len(&mut self, docs_num: usize, new_doc_len: u32) -> Result<(), io::Error> {
+        self.data.avg_doc_len = (self.data.avg_doc_len * docs_num as f64 + new_doc_len as f64)
+            / (docs_num as f64 + 1.0);
+        self.operations += 1;
+        if self.operations >= SEARCH_META_OPERATIONS_THRESHOLD {
+            self.flush()?;
+            self.operations = 0;
+        };
+
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<(), io::Error> {
+        let mut file = File::create(&self.path)?;
+        bincode::encode_into_std_write(&self.data, &mut file, bincode::config::standard()).unwrap();
+        Ok(())
+    }
+}
+
+pub struct SearchResult {
     pub doc_id: Ulid,
     pub score: f64,
 }
 
-impl Ord for Result {
+impl Ord for SearchResult {
     fn cmp(&self, other: &Self) -> Ordering {
         self.score.total_cmp(&other.score)
     }
 }
 
-impl PartialOrd for Result {
+impl PartialOrd for SearchResult {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.score.total_cmp(&other.score))
     }
 }
 
-impl PartialEq for Result {
+impl PartialEq for SearchResult {
     fn eq(&self, other: &Self) -> bool {
         self.score == other.score
     }
 }
 
-impl Eq for Result {}
+impl Eq for SearchResult {}
 
 #[pyclass(name = "Search")]
 pub struct Search {
@@ -50,7 +117,7 @@ pub struct Search {
     tokenizer: Tokenizer,
     hasher: TokenHasher,
     fuzzy_trie: Trie,
-    avg_doc_len: f64,
+    meta: SearchMeta,
 }
 
 #[pymethods]
@@ -62,15 +129,20 @@ impl Search {
             fuzzy_trie.init_automaton(i);
         }
 
+        let hasher = TokenHasher::load(&dir)?;
+        for token in hasher.tokens() {
+            fuzzy_trie.add(token);
+        }
+
         Ok(Self {
             index_manager: IndexManager::load(&dir)?,
+            meta: SearchMeta::load(dir.join("meta"))?,
+            hasher: hasher,
             documents_manager: DocumentsManager::load(dir)?,
             deleted_documents: HashSet::with_capacity(100),
             ulid_generator: Generator::new(),
             tokenizer: Tokenizer::new(),
-            hasher: TokenHasher::new(),
             fuzzy_trie: fuzzy_trie,
-            avg_doc_len: 0.0,
         })
     }
 
@@ -79,14 +151,13 @@ impl Search {
 
         let (tokens_num, tokens_map) = self.tokenizer.tokenize_doc(&mut doc);
 
-        self.avg_doc_len = (self.avg_doc_len * self.documents_manager.docs.len() as f64
-            + tokens_num as f64)
-            / (self.documents_manager.docs.len() as f64 + 1.0);
+        self.meta
+            .update_avg_doc_len(self.documents_manager.docs.len(), tokens_num)?;
 
         let mut tokens = Vec::with_capacity(tokens_num as usize);
         for (token, positions) in tokens_map {
             self.fuzzy_trie.add(&token);
-            let token = self.hasher.add(token);
+            let token = self.hasher.add(token)?;
             let posting = Posting {
                 doc_id: doc_id.0,
                 score: term_bm25(
@@ -94,7 +165,7 @@ impl Search {
                     self.documents_manager.docs.len() as u64 + 1,
                     self.index_manager.index.entry(token).or_default().len() as u64 + 1,
                     tokens_num,
-                    self.avg_doc_len,
+                    self.meta.data.avg_doc_len,
                 ),
                 positions: positions,
             };
@@ -203,7 +274,7 @@ impl Search {
                         .unwrap()
                         .tokens
                         .len() as u32,
-                    self.avg_doc_len,
+                    self.meta.data.avg_doc_len,
                     &self.index_manager.index,
                     mis_result,
                 )
@@ -212,13 +283,13 @@ impl Search {
 
             if score > 0.0 {
                 if top_k == 0 || results.len() < top_k as usize {
-                    results.push(Reverse(Result {
+                    results.push(Reverse(SearchResult {
                         doc_id: doc_id,
                         score: score,
                     }));
                 } else if results.peek().unwrap().0.score < score {
                     let _ = results.pop();
-                    results.push(Reverse(Result {
+                    results.push(Reverse(SearchResult {
                         doc_id: doc_id,
                         score: score,
                     }));
@@ -247,6 +318,8 @@ impl Search {
         self.force_delete()?;
         self.documents_manager.flush()?;
         self.index_manager.flush()?;
+        self.hasher.flush()?;
+        self.meta.flush()?;
         Ok(())
     }
 
