@@ -16,6 +16,8 @@ use bincode::enc::write::SizeWriter;
 use bincode::enc::EncoderImpl;
 use bincode::error::EncodeError;
 use bincode::{Decode, Encode};
+use chumsky::prelude::empty;
+use hashbrown::hash_map::Entry;
 use hashbrown::{HashMap, HashSet};
 use nohash_hasher::BuildNoHashHasher;
 use std::fmt::Debug;
@@ -80,10 +82,8 @@ impl LogOperation {
 }
 
 trait IndexLog: Debug {
-    fn from_bytes(bytes: &mut [u8]) -> Self
-    where
-        Self: Sized;
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError>;
+    fn from_bytes(bytes: &mut [u8]) -> Self;
 }
 
 enum IndexLogImpl<'a> {
@@ -404,41 +404,52 @@ impl LogsManager {
         Ok(())
     }
 
-    fn read(&mut self, direction: ReadDirection) -> Result<(), io::Error> {
+    fn load(
+        &self,
+        direction: ReadDirection,
+    ) -> Result<HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>, io::Error> {
         let reader = LogsReader::new(&self.buffer.dir, direction)?;
+
         let mut index: HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>> = HashMap::default();
         let mut tokens_cur_index: HashMap<u32, usize, BuildNoHashHasher<u32>> = HashMap::default();
         let mut deleted: HashSet<u128> = HashSet::default();
+        let mut empty_postings = vec![];
 
         for res in reader {
             let (meta, log) = res?;
 
-            // TODO: handle case if token was deleted
-            let i = tokens_cur_index
+            let idx = tokens_cur_index
                 .entry(log.header().token)
                 .or_insert(log.header().postings_num as usize - 1);
 
-            let postings =
-                index
-                    .entry(log.header().token)
-                    .or_insert(vec![Posting::default(); log.header().postings_num as usize]);
+            let postings = match index.entry(log.header().token) {
+                Entry::Vacant(e) => {
+                    if log.header().postings_num == 0 {
+                        empty_postings.push(log.header().token)
+                    }
+                    e.insert(vec![Posting::default(); log.header().postings_num as usize])
+                }
+                Entry::Occupied(e) => e.into_mut(),
+            };
 
             match log {
                 IndexLogImpl::Add(log) => {
                     if !deleted.contains(&meta.id) {
-                        postings[*i] = log.posting.into_owned();
-                        *i -= 1;
+                        postings[*idx] = log.posting.into_owned();
+                        *idx -= 1;
                     }
                 }
-                IndexLogImpl::Delete(log) => {
+                IndexLogImpl::Delete(_) => {
                     deleted.insert(meta.id);
                 }
             }
         }
 
-        println!("index: {:?}", index);
+        for token in empty_postings {
+            index.remove(&token);
+        }
 
-        Ok(())
+        Ok(index)
     }
 
     fn flush(&mut self) -> Result<(), io::Error> {
@@ -470,13 +481,12 @@ pub struct IndexManager {
 
 impl IndexManager {
     pub fn load(dir: &PathBuf) -> Result<Self, io::Error> {
-        // TODO: load index from logs
-        let mut logs_manager = LogsManager::new(dir.join("index"));
-        logs_manager.read(ReadDirection::BACKWARD)?;
+        // TODO: create file structure if not exists
+        let logs_manager = LogsManager::new(dir.join("index"));
 
         Ok(Self {
+            index: logs_manager.load(ReadDirection::BACKWARD)?,
             logs_manager: logs_manager,
-            index: HashMap::default(),
         })
     }
 
@@ -526,7 +536,9 @@ impl IndexManager {
 
             if postings.len() == 0 {
                 self.index.remove(token);
-                fuzzy_trie.delete(hasher.delete(*token).unwrap());
+                if let Some(token) = hasher.delete(*token)? {
+                    fuzzy_trie.delete(token);
+                }
             }
         }
 
