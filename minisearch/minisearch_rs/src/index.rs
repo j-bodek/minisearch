@@ -5,10 +5,8 @@ use std::array::TryFromSliceError;
 use std::borrow::Cow;
 use std::error::Error;
 use std::fs::File;
-use std::hash::Hash;
-use std::io::{Read, Seek, Write};
+use std::io::Write;
 use std::marker::PhantomData;
-use std::os::unix::fs::FileExt;
 use std::{io, path::PathBuf};
 
 use bincode::config::Configuration;
@@ -16,9 +14,9 @@ use bincode::enc::write::SizeWriter;
 use bincode::enc::EncoderImpl;
 use bincode::error::EncodeError;
 use bincode::{Decode, Encode};
-use chumsky::prelude::empty;
 use hashbrown::hash_map::Entry;
 use hashbrown::{HashMap, HashSet};
+use memmap2::Mmap;
 use nohash_hasher::BuildNoHashHasher;
 use std::fmt::Debug;
 use thiserror::Error;
@@ -37,7 +35,7 @@ struct LogMeta {
 impl LogMeta {
     const ENCODED_SIZE: usize = 28;
 
-    fn from_bytes(bytes: [u8; Self::ENCODED_SIZE]) -> Result<Self, TryFromSliceError> {
+    fn from_bytes(bytes: &[u8]) -> Result<Self, TryFromSliceError> {
         Ok(Self {
             id: u128::from_be_bytes(bytes[..16].try_into()?),
             offset: u64::from_be_bytes(bytes[16..24].try_into()?),
@@ -83,7 +81,7 @@ impl LogOperation {
 
 trait IndexLog: Debug {
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError>;
-    fn from_bytes(bytes: &mut [u8]) -> Self;
+    fn from_bytes(bytes: &[u8]) -> Self;
 }
 
 enum IndexLogImpl<'a> {
@@ -100,7 +98,7 @@ impl<'a> IndexLogImpl<'a> {
     }
 }
 
-fn decode_log<'a>(bytes: &mut [u8]) -> Result<IndexLogImpl<'a>, FromBytesError> {
+fn decode_log<'a>(bytes: &[u8]) -> Result<IndexLogImpl<'a>, FromBytesError> {
     let operation = LogOperation::from_u8(u8::from_be_bytes(bytes[..1].try_into()?))?;
     match operation {
         LogOperation::ADD => Ok(IndexLogImpl::Add(AddLog::from_bytes(bytes))),
@@ -145,7 +143,7 @@ struct AddLog<'a> {
 }
 
 impl<'a> IndexLog for AddLog<'a> {
-    fn from_bytes(bytes: &mut [u8]) -> Self {
+    fn from_bytes(bytes: &[u8]) -> Self {
         let header =
             LogHeader::from_bytes(bytes[..LogHeader::ENCODED_SIZE].try_into().unwrap()).unwrap();
         let (posting, _): (Posting, usize) = bincode::decode_from_slice(
@@ -204,7 +202,7 @@ struct DeleteLog {
 }
 
 impl IndexLog for DeleteLog {
-    fn from_bytes(bytes: &mut [u8]) -> Self {
+    fn from_bytes(bytes: &[u8]) -> Self {
         // TODO: proper error handling
         Self {
             header: LogHeader::from_bytes(bytes.try_into().unwrap()).unwrap(),
@@ -283,7 +281,7 @@ enum ReadDirection {
 }
 
 struct MetaReader {
-    file: File,
+    mmap: Mmap,
     file_size: u64,
     offset: i64,
     direction: ReadDirection,
@@ -291,8 +289,9 @@ struct MetaReader {
 
 impl MetaReader {
     fn new(file_path: PathBuf, direction: ReadDirection) -> Result<Self, io::Error> {
-        let file = File::open(file_path).unwrap();
-        let file_size = file.metadata().unwrap().len();
+        let file = File::open(&file_path)?;
+        let mmap = unsafe { Mmap::map(&file)? };
+        let file_size = file.metadata()?.len();
         let offset = if let ReadDirection::FORWARD = direction {
             0
         } else {
@@ -300,7 +299,7 @@ impl MetaReader {
         };
 
         Ok(Self {
-            file: file,
+            mmap: mmap,
             file_size: file_size,
             offset: offset,
             direction: direction,
@@ -312,43 +311,42 @@ impl Iterator for MetaReader {
     type Item = Result<LogMeta, io::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut buf = [0u8; LogMeta::ENCODED_SIZE];
+        if self.offset >= self.file_size as i64 || self.offset < 0 {
+            return None;
+        }
+
+        let meta = LogMeta::from_bytes(
+            &self.mmap
+                [self.offset as usize..(self.offset as usize + LogMeta::ENCODED_SIZE as usize)],
+        )
+        .unwrap();
+
         match self.direction {
             ReadDirection::FORWARD => {
-                if self.file.stream_position().unwrap() >= self.file_size {
-                    return None;
-                }
+                self.offset += LogMeta::ENCODED_SIZE as i64;
             }
             ReadDirection::BACKWARD => {
-                if self.offset < 0 {
-                    return None;
-                }
-                if let Err(e) = self.file.seek(io::SeekFrom::Start(self.offset as u64)) {
-                    return Some(Err(e));
-                };
                 self.offset -= LogMeta::ENCODED_SIZE as i64;
             }
         }
 
-        if let Err(e) = self.file.read_exact(&mut buf) {
-            return Some(Err(e));
-        };
-
-        Some(Ok(LogMeta::from_bytes(buf).unwrap()))
+        Some(Ok(meta))
     }
 }
 
 struct LogsReader<'a> {
     _marker: PhantomData<&'a ()>,
-    file: File,
+    mmap: Mmap,
     meta_reader: MetaReader,
 }
 
 impl<'a> LogsReader<'a> {
     fn new(index_dir: &PathBuf, direction: ReadDirection) -> Result<Self, io::Error> {
+        let file = File::open(&index_dir.join("index")).unwrap();
+        let mmap = unsafe { Mmap::map(&file).unwrap() };
         Ok(Self {
             _marker: PhantomData,
-            file: File::open(index_dir.join("index"))?,
+            mmap: mmap,
             meta_reader: MetaReader::new(index_dir.join("meta"), direction)?,
         })
     }
@@ -366,13 +364,9 @@ impl<'a> Iterator for LogsReader<'a> {
             None => return None,
         };
 
-        let mut buf = vec![0u8; meta.size as usize];
-        if let Err(e) = self.file.read_exact_at(&mut buf, meta.offset) {
-            return Some(Err(e));
-        };
-
         // TODO: add proper error handling
-        let log = decode_log(&mut buf).unwrap();
+        let bytes = &self.mmap[meta.offset as usize..(meta.offset as usize + meta.size as usize)];
+        let log = decode_log(bytes).unwrap();
 
         Some(Ok((meta, log)))
     }
