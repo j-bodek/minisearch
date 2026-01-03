@@ -7,6 +7,7 @@ use std::error::Error;
 use std::fs::{self, File};
 use std::io::Write;
 use std::marker::PhantomData;
+use std::time::SystemTime;
 use std::{io, path::PathBuf};
 
 use bincode::config::Configuration;
@@ -24,6 +25,7 @@ use thiserror::Error;
 use ulid::Ulid;
 
 static BUFFER_THRESHOLD: u64 = 1024 * 1024;
+static SAVE_SECS_THRESHOLD: u64 = 5;
 
 #[derive(Debug)]
 struct LogMeta {
@@ -374,12 +376,17 @@ impl<'a> Iterator for LogsReader<'a> {
 }
 
 struct LogsManager {
+    last_save: u64,
     buffer: Buffer,
 }
 
 impl LogsManager {
     fn new(dir: PathBuf) -> Self {
         Self {
+            last_save: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             buffer: Buffer {
                 dir: dir,
                 index_size: None,
@@ -391,8 +398,15 @@ impl LogsManager {
 
     fn write<T: IndexLog>(&mut self, doc_id: u128, log: T) -> Result<(), Box<dyn Error>> {
         self.buffer.write(doc_id, log)?;
+        let cur_ts = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-        if self.buffer.index.len() as u64 > BUFFER_THRESHOLD {
+        if self.buffer.index.len() as u64 > BUFFER_THRESHOLD
+            || cur_ts >= self.last_save + SAVE_SECS_THRESHOLD
+        {
+            self.last_save = cur_ts;
             self.buffer.flush()?;
         }
 

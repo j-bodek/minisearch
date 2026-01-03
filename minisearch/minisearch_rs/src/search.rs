@@ -16,10 +16,12 @@ use std::collections::BinaryHeap;
 use std::fs::{self, File};
 use std::io;
 use std::path::PathBuf;
+use std::time::SystemTime;
 use std::vec::Vec;
 use ulid::{Generator, Ulid};
 
-const SEARCH_META_OPERATIONS_THRESHOLD: u32 = 100_000;
+static SEARCH_META_OPERATIONS_THRESHOLD: u32 = 100_000;
+static SAVE_META_SECS_THRESHOLD: u64 = 10;
 
 #[derive(Decode, Encode, PartialEq, Debug, Clone)]
 struct SearchMetaData {
@@ -29,6 +31,7 @@ struct SearchMetaData {
 struct SearchMeta {
     path: PathBuf,
     operations: u32,
+    last_save: u64,
     data: SearchMetaData,
 }
 
@@ -37,6 +40,10 @@ impl SearchMeta {
         Self {
             path: path,
             operations: 0,
+            last_save: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             data: SearchMetaData { avg_doc_len: 0.0 },
         }
     }
@@ -60,6 +67,10 @@ impl SearchMeta {
         Ok(Self {
             path: path,
             operations: 0,
+            last_save: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
             data: data,
         })
     }
@@ -67,10 +78,20 @@ impl SearchMeta {
     fn update_avg_doc_len(&mut self, docs_num: usize, new_doc_len: u32) -> Result<(), io::Error> {
         self.data.avg_doc_len = (self.data.avg_doc_len * docs_num as f64 + new_doc_len as f64)
             / (docs_num as f64 + 1.0);
+
+        let cur_ts = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
         self.operations += 1;
-        if self.operations >= SEARCH_META_OPERATIONS_THRESHOLD {
+
+        if self.operations >= SEARCH_META_OPERATIONS_THRESHOLD
+            || cur_ts >= self.last_save + SAVE_META_SECS_THRESHOLD
+        {
             self.flush()?;
             self.operations = 0;
+            self.last_save = cur_ts;
         };
 
         Ok(())
@@ -129,7 +150,15 @@ impl Search {
             fuzzy_trie.init_automaton(i);
         }
 
-        let hasher = TokenHasher::load(&dir)?;
+        let hasher = match TokenHasher::load(&dir) {
+            Ok(hasher) => hasher,
+            Err(e) => {
+                return Err(PyValueError::new_err(format!(
+                    "Failed to load TokenHasher {}",
+                    e.to_string()
+                )))
+            }
+        };
         for token in hasher.tokens() {
             fuzzy_trie.add(token);
         }

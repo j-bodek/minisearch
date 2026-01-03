@@ -19,6 +19,7 @@ use ulid::Ulid;
 
 static SEGMENT_THRESHOLD: u64 = 50 * 1024 * 1024;
 static DOCUMENTS_BUFFER_THRESHOLD: u64 = 1024 * 1024;
+static SAVE_SECS_THRESHOLD: u64 = 5;
 static MERGE_THRESHOLD: f64 = 0.3;
 
 #[pyclass(name = "Document")]
@@ -168,6 +169,7 @@ pub struct DocumentsManager {
     buffer: Buffer,
     segments: HashMap<PathBuf, Segment>,
     cur_segment: PathBuf,
+    last_save: u64,
 }
 
 impl DocumentsManager {
@@ -233,6 +235,10 @@ impl DocumentsManager {
             buffer: Buffer::new(),
             segments: segments_map,
             cur_segment: cur_segment,
+            last_save: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
         })
     }
 
@@ -461,7 +467,15 @@ impl DocumentsManager {
             segment.size = segment_size;
         }
 
-        if self.buffer.documents.len() as u64 > DOCUMENTS_BUFFER_THRESHOLD {
+        let cur_ts = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        if self.buffer.documents.len() as u64 > DOCUMENTS_BUFFER_THRESHOLD
+            || cur_ts >= self.last_save + SAVE_SECS_THRESHOLD
+        {
+            self.last_save = cur_ts;
             self.flush()?;
         }
 
@@ -471,6 +485,7 @@ impl DocumentsManager {
             let (path, segment) = Self::create_segment(&self.dir)?;
             self.segments.insert(path.clone(), segment);
             self.cur_segment = path;
+            self.last_save = cur_ts;
         }
 
         Ok(())

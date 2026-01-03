@@ -1,14 +1,17 @@
+use std::error::Error;
 use std::{
     collections::hash_map::Keys,
     fs::{self, File},
     io,
     path::PathBuf,
+    time::SystemTime,
 };
 
 use bincode::{Decode, Encode};
 use std::collections::HashMap;
 
-const OPERATIONS_THRESHOLD: u32 = 100_000;
+static OPERATIONS_THRESHOLD: u32 = 100_000;
+static SAVE_SECS_THRESHOLD: u64 = 5;
 
 #[derive(Decode, Encode, PartialEq, Debug, Clone)]
 struct TokensStore {
@@ -46,11 +49,12 @@ impl TokensStore {
 pub struct TokenHasher {
     path: PathBuf,
     operations: u32,
+    last_save: u64,
     tokens_store: TokensStore,
 }
 
 impl TokenHasher {
-    pub fn load(dir: &PathBuf) -> Result<Self, io::Error> {
+    pub fn load(dir: &PathBuf) -> Result<Self, Box<dyn Error>> {
         let index_dir = dir.join("index");
         let tokens = index_dir.join("tokens");
         if !fs::exists(&index_dir)? || !fs::exists(&tokens)? {
@@ -62,6 +66,9 @@ impl TokenHasher {
             tokens_store: TokensStore::load(&tokens)?,
             path: tokens,
             operations: 0,
+            last_save: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)?
+                .as_secs(),
         })
     }
 
@@ -85,10 +92,7 @@ impl TokenHasher {
 
         self.tokens_store.map.insert(token, idx);
         self.operations += 1;
-        if self.operations >= OPERATIONS_THRESHOLD {
-            self.operations = 0;
-            self.flush()?;
-        }
+        self.save()?;
         return Ok(idx);
     }
 
@@ -103,10 +107,7 @@ impl TokenHasher {
         self.tokens_store.deleted.push(token);
         self.tokens_store.map.remove(&token_str);
         self.operations += 1;
-        if self.operations >= OPERATIONS_THRESHOLD {
-            self.operations = 0;
-            self.flush()?;
-        }
+        self.save()?;
         Ok(Some(token_str))
     }
 
@@ -122,6 +123,22 @@ impl TokenHasher {
             Some(val) => val.as_ref(),
             None => None,
         }
+    }
+
+    fn save(&mut self) -> Result<(), io::Error> {
+        let cur_ts = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        if self.operations >= OPERATIONS_THRESHOLD || cur_ts >= self.last_save + SAVE_SECS_THRESHOLD
+        {
+            self.operations = 0;
+            self.last_save = cur_ts;
+            self.flush()?;
+        }
+
+        Ok(())
     }
 
     pub fn flush(&self) -> Result<(), io::Error> {
