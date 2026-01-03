@@ -36,6 +36,11 @@ impl TokensStore {
         }
 
         let mut file = File::open(path)?;
+        // if file is empty don't try to decode tokens
+        if file.metadata()?.len() == 0 {
+            return Ok(Self::new(HashMap::new(), Vec::new(), Vec::new()));
+        }
+
         match bincode::decode_from_std_read(&mut file, bincode::config::standard()) {
             Ok(store) => Ok(store),
             Err(e) => {
