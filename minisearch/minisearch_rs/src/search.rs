@@ -134,6 +134,7 @@ impl Search {
             fuzzy_trie.add(token);
         }
 
+        println!("loading index");
         Ok(Self {
             index_manager: IndexManager::load(&dir)?,
             meta: SearchMeta::load(dir.join("meta"))?,

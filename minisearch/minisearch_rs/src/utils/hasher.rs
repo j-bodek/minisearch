@@ -51,10 +51,16 @@ pub struct TokenHasher {
 
 impl TokenHasher {
     pub fn load(dir: &PathBuf) -> Result<Self, io::Error> {
-        let path = dir.join("index").join("tokens");
+        let index_dir = dir.join("index");
+        let tokens = index_dir.join("tokens");
+        if !fs::exists(&index_dir)? || !fs::exists(&tokens)? {
+            fs::create_dir_all(&index_dir)?;
+            File::create(&tokens)?;
+        }
+
         Ok(Self {
-            tokens_store: TokensStore::load(&path)?,
-            path: path,
+            tokens_store: TokensStore::load(&tokens)?,
+            path: tokens,
             operations: 0,
         })
     }

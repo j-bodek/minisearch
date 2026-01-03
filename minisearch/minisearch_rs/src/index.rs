@@ -4,7 +4,7 @@ use crate::utils::hasher::TokenHasher;
 use std::array::TryFromSliceError;
 use std::borrow::Cow;
 use std::error::Error;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Write;
 use std::marker::PhantomData;
 use std::{io, path::PathBuf};
@@ -276,6 +276,7 @@ impl Buffer {
 }
 
 enum ReadDirection {
+    #[allow(dead_code)]
     FORWARD,
     BACKWARD,
 }
@@ -475,8 +476,15 @@ pub struct IndexManager {
 
 impl IndexManager {
     pub fn load(dir: &PathBuf) -> Result<Self, io::Error> {
-        // TODO: create file structure if not exists
-        let logs_manager = LogsManager::new(dir.join("index"));
+        let index_dir = dir.join("index");
+        let (index, meta) = (index_dir.join("index"), index_dir.join("meta"));
+        if !fs::exists(&index_dir)? || !fs::exists(&index)? || !fs::exists(&meta)? {
+            fs::create_dir_all(&index_dir)?;
+            File::create(&index)?;
+            File::create(&meta)?;
+        }
+
+        let logs_manager = LogsManager::new(index_dir);
 
         Ok(Self {
             index: logs_manager.load(ReadDirection::BACKWARD)?,
