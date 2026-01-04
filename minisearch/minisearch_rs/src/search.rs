@@ -3,7 +3,7 @@ use crate::index::{IndexManager, Posting};
 use crate::intersect::PostingListIntersection;
 use crate::mis::MinimalIntervalSemanticMatch;
 use crate::parser::Query;
-use crate::scoring::{bm25, max_bm25, term_bm25};
+use crate::scoring::{bm25, max_bm25};
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
@@ -277,7 +277,8 @@ impl Search {
             _ => return Ok(vec![]),
         };
 
-        let mut results = BinaryHeap::with_capacity(top_k as usize);
+        let mut results: BinaryHeap<Reverse<SearchResult>> =
+            BinaryHeap::with_capacity(top_k as usize);
 
         for pointers in intersection {
             let (doc_id, mut score) = (pointers[0][0].doc_id, 0.0);
@@ -290,6 +291,14 @@ impl Search {
                 self.meta.data.avg_doc_len,
                 &pointers,
             );
+
+            if top_k != 0
+                && results.len() == top_k as usize
+                && results.peek().unwrap().0.score >= max_score
+            {
+                // skip minimal interval sematic match for non compatative documents
+                continue;
+            }
 
             for mis_result in
                 MinimalIntervalSemanticMatch::new(&self.index_manager.index, pointers, slop as i32)
@@ -331,7 +340,6 @@ impl Search {
             .map(|r| {
                 (
                     r.0.score,
-                    // todo, don't read all of the data to memory, lazy load instead (some rust struct that can be returned?)
                     self.documents_manager
                         .docs
                         .get(&r.0.doc_id)
