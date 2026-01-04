@@ -14,6 +14,8 @@ pub struct TokenDocPointer {
     pub doc_idx: u32,
     pub token: u32,
     pub distance: u16,
+    pub postings_len: u64,
+    pub tf: u64,
 }
 
 pub struct PostingListIntersection<'a> {
@@ -78,6 +80,8 @@ impl<'a> PostingListIntersection<'a> {
                     doc_idx: 0,
                     token: token,
                     distance: distance,
+                    tf: postings[0].positions.len() as u64,
+                    postings_len: postings.len() as u64,
                 };
                 pointers[i].push(Reverse(pointer));
             }
@@ -98,36 +102,35 @@ impl<'a> PostingListIntersection<'a> {
     fn next_docs(
         index: &HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>,
         pointer: &mut BinaryHeap<Reverse<TokenDocPointer>>,
-    ) -> (f64, Vec<TokenDocPointer>) {
-        let (mut max_score, mut doc_ids) = (0 as f64, Vec::<TokenDocPointer>::new());
+    ) -> Vec<TokenDocPointer> {
+        let mut doc_ids = Vec::<TokenDocPointer>::new();
 
         while !pointer.is_empty() && (doc_ids.is_empty() || doc_ids[0] == pointer.peek().unwrap().0)
         {
             let p = pointer.pop().unwrap();
             if p.0.doc_idx + 1 <= index.get(&p.0.token).unwrap().len() as u32 - 1 {
+                let postings = index.get(&p.0.token).unwrap();
                 pointer.push(Reverse(TokenDocPointer {
-                    doc_id: Ulid(index.get(&p.0.token).unwrap()[p.0.doc_idx as usize + 1].doc_id),
+                    doc_id: Ulid(postings[p.0.doc_idx as usize + 1].doc_id),
                     doc_idx: p.0.doc_idx + 1,
                     token: p.0.token.clone(),
                     distance: p.0.distance,
+                    tf: postings[p.0.doc_idx as usize + 1].positions.len() as u64,
+                    postings_len: postings.len() as u64,
                 }))
             }
 
-            max_score = f64::max(
-                max_score,
-                index.get(&p.0.token).unwrap()[p.0.doc_idx as usize].score,
-            );
             doc_ids.push(p.0);
         }
 
-        return (max_score, doc_ids);
+        return doc_ids;
     }
 
     fn geq_docs(
         index: &HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>,
         pointer: &mut BinaryHeap<Reverse<TokenDocPointer>>,
         target_doc: &Ulid,
-    ) -> (f64, Vec<TokenDocPointer>) {
+    ) -> Vec<TokenDocPointer> {
         while !pointer.is_empty() && pointer.peek().unwrap().0.doc_id < *target_doc {
             let doc = pointer.pop().unwrap();
             let new_idx = match index
@@ -140,11 +143,14 @@ impl<'a> PostingListIntersection<'a> {
             };
 
             if new_idx <= index.get(&doc.0.token).unwrap().len() - 1 {
+                let postings = index.get(&doc.0.token).unwrap();
                 pointer.push(Reverse(TokenDocPointer {
-                    doc_id: Ulid(index.get(&doc.0.token).unwrap()[new_idx].doc_id),
+                    doc_id: Ulid(postings[new_idx].doc_id),
                     doc_idx: new_idx as u32,
                     token: doc.0.token.clone(),
                     distance: doc.0.distance,
+                    tf: postings[new_idx].positions.len() as u64,
+                    postings_len: postings.len() as u64,
                 }))
             }
         }
@@ -159,7 +165,7 @@ impl<'a> Iterator for PostingListIntersection<'a> {
         let mut same = true;
 
         for i in 0..self.query.tokens.len() {
-            let (_, docs) = Self::next_docs(self.index, &mut self.pointers[i]);
+            let docs = Self::next_docs(self.index, &mut self.pointers[i]);
 
             if docs.is_empty() {
                 return None;
@@ -185,8 +191,7 @@ impl<'a> Iterator for PostingListIntersection<'a> {
                 let cur_target_doc = target_doc.clone();
                 for i in 0..self.query.tokens.len() {
                     if cur_target_doc != self.docs[i][0].doc_id {
-                        let (_, docs) =
-                            Self::geq_docs(self.index, &mut self.pointers[i], &target_doc);
+                        let docs = Self::geq_docs(self.index, &mut self.pointers[i], &target_doc);
 
                         if docs.is_empty() {
                             return None;

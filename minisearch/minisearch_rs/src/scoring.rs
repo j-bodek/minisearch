@@ -1,4 +1,4 @@
-use crate::index::Posting;
+use crate::{documents::DocumentsManager, index::Posting, intersect::TokenDocPointer};
 use hashbrown::HashMap;
 use nohash_hasher::BuildNoHashHasher;
 
@@ -42,4 +42,35 @@ pub fn bm25(
     }
 
     score / (mis_result.slop + 1) as f64
+}
+
+pub fn max_bm25(
+    docs_manager: &DocumentsManager,
+    avg_doc_length: f64,
+    pointers: &Vec<Vec<TokenDocPointer>>,
+) -> f64 {
+    let mut score: f64 = 0.0;
+    let docs_num = docs_manager.docs.len() as u64;
+    let doc_length = docs_manager
+        .docs
+        .get(&pointers[0][0].doc_id)
+        .unwrap()
+        .tokens
+        .len() as u32;
+
+    for pointer in pointers {
+        let mut max: f64 = 0.0;
+        for token_doc_pointer in pointer {
+            max = max.max(term_bm25(
+                token_doc_pointer.tf,
+                docs_num,
+                token_doc_pointer.postings_len,
+                doc_length,
+                avg_doc_length,
+            ));
+        }
+        score += max;
+    }
+
+    score
 }

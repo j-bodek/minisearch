@@ -3,7 +3,7 @@ use crate::index::{IndexManager, Posting};
 use crate::intersect::PostingListIntersection;
 use crate::mis::MinimalIntervalSemanticMatch;
 use crate::parser::Query;
-use crate::scoring::{bm25, term_bm25};
+use crate::scoring::{bm25, max_bm25, term_bm25};
 use crate::tokenizer::Tokenizer;
 use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
@@ -189,13 +189,6 @@ impl Search {
             let token = self.hasher.add(token)?;
             let posting = Posting {
                 doc_id: doc_id.0,
-                score: term_bm25(
-                    positions.len() as u64,
-                    self.documents_manager.docs.len() as u64 + 1,
-                    self.index_manager.index.entry(token).or_default().len() as u64 + 1,
-                    tokens_num,
-                    self.meta.data.avg_doc_len,
-                ),
                 positions: positions,
             };
             if let Err(e) = self.index_manager.insert(token, posting) {
@@ -291,6 +284,12 @@ impl Search {
             if self.deleted_documents.contains(&doc_id) {
                 continue;
             }
+
+            let max_score = max_bm25(
+                &self.documents_manager,
+                self.meta.data.avg_doc_len,
+                &pointers,
+            );
 
             for mis_result in
                 MinimalIntervalSemanticMatch::new(&self.index_manager.index, pointers, slop as i32)

@@ -470,7 +470,6 @@ impl LogsManager {
 pub struct Posting {
     pub doc_id: u128,
     pub positions: Vec<u32>,
-    pub score: f64,
 }
 
 impl Posting {
@@ -478,7 +477,6 @@ impl Posting {
         Self {
             doc_id: 0,
             positions: Vec::with_capacity(0),
-            score: 0.0,
         }
     }
 }
