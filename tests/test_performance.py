@@ -2,16 +2,17 @@ import json
 import timeit
 import pytest
 import statistics
-from minisearch import MiniSearch
-from whoosh.index import create_in
-from whoosh.fields import *
-from whoosh.qparser import QueryParser, FuzzyTermPlugin
-from whoosh.query import FuzzyTerm
+from minisearch import MiniSearchRs as MiniSearch
+
+# from whoosh.index import create_in
+# from whoosh.fields import *
+# from whoosh.qparser import QueryParser, FuzzyTermPlugin
+# from whoosh.query import FuzzyTerm
 
 
 @pytest.fixture
 def data():
-    with open("tests/assets/articles_1k.json", "r+") as f:
+    with open("tests/assets/articles_50k.json", "r+") as f:
         data = json.load(f)
 
     return data.values()
@@ -27,10 +28,14 @@ def queries():
     return queries
 
 
+def rust_query(query, fuzzy, slop):
+    return '"' + " ".join([f"{t}~{fuzzy}" for t in query.lower().split()]) + f'"~{slop}'
+
+
 def test_performance(data, queries):
 
     search = MiniSearch()
-    search.add("wikipedia")
+    search.add("wikipedia", "data")
 
     def insert_articles(data, search):
         def _wrapper():
@@ -50,8 +55,8 @@ def test_performance(data, queries):
         for q in queries:
             times.append(
                 timeit.timeit(
-                    lambda: search.index("wikipedia").top_search(
-                        q, slop=slop, fuzzy=fuzzy, score=score
+                    lambda: search.index("wikipedia").search(
+                        rust_query(q, fuzzy, slop), top_k=0
                     ),
                     number=1,
                 )

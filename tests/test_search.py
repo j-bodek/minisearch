@@ -1,4 +1,4 @@
-import re
+import time
 import json
 import pytest
 
@@ -26,52 +26,56 @@ def queries():
 
 @pytest.fixture
 def results():
-    with open("tests/assets/results_1k.json", "r+") as f:
+    with open("tests/assets/results_1k_top_k.json", "r+") as f:
         data = json.load(f)
 
     return data
 
 
 def rust_query(query, fuzzy, slop):
-    query = re.sub("[^A-Za-z0-9\\s]+", "", query)
     return '"' + " ".join([f"{t}~{fuzzy}" for t in query.lower().split()]) + f'"~{slop}'
 
 
 def test_performance(data, queries, results):
 
     search = MiniSearch()
-    search.add("wikipedia")
+    s = time.time()
+    search.add("wikipedia", "data")
+    print(f"Loading took: {time.time() - s}")
 
+    s = time.time()
     for d in data:
         search.index("wikipedia").add(d)
+    search.index("wikipedia").flush()
+    print(f"Inserting took: {time.time() - s}")
 
-    def test_results(_results, slop, fuzzy, score):
+    def test_results(_results, slop, fuzzy, top_k):
 
-        results = _results[f"slop_{slop}_fuzzy_{fuzzy}_score_{score}"]
-        top_k = None
+        results = _results[f"slop_{slop}_fuzzy_{fuzzy}_top_k_{top_k}"]
+
         for q in queries:
             query_results = []
-            # for r in search.index("wikipedia").search(
-            #     q, slop=slop, fuzzy=fuzzy, top_k=top_k, score=score
-            # ):
-            for r in search.index("wikipedia").search(
-                rust_query(q, fuzzy, slop), top_k=0
+            for score, doc in search.index("wikipedia").search(
+                rust_query(q, fuzzy, slop), top_k=top_k
             ):
-                # r = r["content"][:100]
-                r = r[2][:100]
+                r = doc.content[:100]
                 assert r in results.get(
                     q, []
-                ), f"Slop: {slop}, fuzzy: {fuzzy}, top-k: {top_k}, score: {score} Result: {r} was returned for query: {q} but isn't present in defined results"
+                ), f"Slop: {slop}, fuzzy: {fuzzy}, top-k: {top_k} Result: {r} was returned for query: {q} but isn't present in defined results"
 
                 query_results.append(r)
 
             for r in results.get(q, []):
                 assert (
                     r in query_results
-                ), f"Slop: {slop}, fuzzy: {fuzzy}, top-k: {top_k}, score: {score} Result: {r} for query: {q} is missing"
+                ), f"Slop: {slop}, fuzzy: {fuzzy}, top-k: {top_k} Result: {r} for query: {q} is missing"
 
                 query_results.append(r)
 
-    for slop in range(0, 4):
-        for fuzzy in range(0, 3):
-            test_results(results, slop=slop, fuzzy=fuzzy, score=True)
+    _results = {}
+    for top_k in [0, 5, 10]:
+        for slop in range(0, 4):
+            for fuzzy in range(0, 3):
+                _results[f"slop_{slop}_fuzzy_{fuzzy}_top_k_{top_k}"] = test_results(
+                    results, slop=slop, fuzzy=fuzzy, top_k=top_k
+                )
