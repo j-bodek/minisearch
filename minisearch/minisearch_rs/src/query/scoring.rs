@@ -1,8 +1,9 @@
-use crate::{documents::DocumentsManager, index::Posting, intersect::TokenDocPointer};
+use crate::core::index::Posting;
+use crate::matching::intersect::TokenDocPointer;
+use crate::matching::mis::MisResult;
+use crate::storage::documents::DocumentsManager;
 use hashbrown::HashMap;
 use nohash_hasher::BuildNoHashHasher;
-
-use crate::mis::MisResult;
 
 static K: f64 = 1.5;
 static B: f64 = 0.75;

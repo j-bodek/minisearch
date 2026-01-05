@@ -1,5 +1,5 @@
-use crate::index::Posting;
-use crate::intersect::TokenDocPointer;
+use crate::core::index::Posting;
+use crate::matching::intersect::TokenDocPointer;
 use core::cmp::{Ordering, Reverse};
 use hashbrown::HashMap;
 use nohash_hasher::BuildNoHashHasher;

@@ -1,5 +1,5 @@
-use crate::parser::Query;
-use crate::stemmer::SnowballStemmer;
+use crate::analysis::stemmer::SnowballStemmer;
+use crate::query::parser::Query;
 use hashbrown::{HashMap, HashSet};
 use unicode_segmentation::UnicodeSegmentation;
 

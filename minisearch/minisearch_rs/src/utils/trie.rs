@@ -1,4 +1,6 @@
-use crate::automaton::{LevenshteinAutomaton, LevenshteinAutomatonBuilder, LevenshteinDfaState};
+use crate::utils::automaton::{
+    LevenshteinAutomaton, LevenshteinAutomatonBuilder, LevenshteinDfaState,
+};
 use std::collections::HashMap;
 
 struct Node {

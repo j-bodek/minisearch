@@ -1,7 +1,7 @@
-use crate::index::Posting;
-use crate::tokenizer::TokenizedQuery;
-use crate::trie::Trie;
+use crate::analysis::tokenizer::TokenizedQuery;
+use crate::core::index::Posting;
 use crate::utils::hasher::TokenHasher;
+use crate::utils::trie::Trie;
 use hashbrown::HashMap;
 use nohash_hasher::BuildNoHashHasher;
 use std::cmp::{max, Ordering, Reverse};

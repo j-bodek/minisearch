@@ -1,5 +1,5 @@
-use crate::trie::Trie;
 use crate::utils::hasher::TokenHasher;
+use crate::utils::trie::Trie;
 
 use std::array::TryFromSliceError;
 use std::borrow::Cow;
