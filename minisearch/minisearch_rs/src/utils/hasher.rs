@@ -86,8 +86,7 @@ impl TokenHasher {
             return Ok(*idx);
         }
 
-        let idx = if !self.tokens_store.deleted.is_empty() {
-            let idx = self.tokens_store.deleted.pop().unwrap();
+        let idx = if let Some(idx) = self.tokens_store.deleted.pop() {
             self.tokens_store.tokens[idx as usize] = Some(token.clone());
             idx
         } else {
@@ -148,6 +147,7 @@ impl TokenHasher {
 
     pub fn flush(&self) -> Result<(), io::Error> {
         let mut file = File::create(&self.path)?;
+        // replace with custom error
         bincode::encode_into_std_write(&self.tokens_store, &mut file, bincode::config::standard())
             .unwrap();
         Ok(())

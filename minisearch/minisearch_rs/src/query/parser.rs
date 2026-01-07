@@ -37,7 +37,12 @@ impl<'a> Query<'a> {
             )));
         }
 
-        return Ok(result.unwrap());
+        match result.into_output() {
+            Some(res) => Ok(res),
+            None => Err(PyValueError::new_err(
+                "Failed to parse query, the output is empty",
+            )),
+        }
     }
 
     fn map_auto_fuzz(len: usize) -> u8 {

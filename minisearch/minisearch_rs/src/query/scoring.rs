@@ -57,12 +57,10 @@ pub fn max_bm25(
 ) -> f64 {
     let mut score: f64 = 0.0;
     let docs_num = docs_manager.docs.len() as u64;
-    let doc_length = docs_manager
-        .docs
-        .get(&pointers[0][0].doc_id)
-        .unwrap()
-        .tokens
-        .len() as u32;
+    let doc_length = match docs_manager.docs.get(&pointers[0][0].doc_id) {
+        Some(doc) => doc.tokens.len() as u32,
+        None => return 0.0,
+    };
 
     for pointer in pointers {
         let mut max: f64 = 0.0;

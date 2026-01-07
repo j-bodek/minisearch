@@ -4,7 +4,7 @@ use crate::utils::hasher::TokenHasher;
 use crate::utils::trie::Trie;
 use hashbrown::HashMap;
 use nohash_hasher::BuildNoHashHasher;
-use std::cmp::{max, Ordering, Reverse};
+use std::cmp::{Ordering, Reverse, max};
 use std::collections::BinaryHeap;
 use ulid::Ulid;
 
@@ -105,11 +105,16 @@ impl<'a> PostingListIntersection<'a> {
     ) -> Vec<TokenDocPointer> {
         let mut doc_ids = Vec::<TokenDocPointer>::new();
 
-        while !pointer.is_empty() && (doc_ids.is_empty() || doc_ids[0] == pointer.peek().unwrap().0)
+        while let Some(p) = pointer.peek()
+            && (doc_ids.is_empty() || doc_ids[0] == p.0)
         {
             let p = pointer.pop().unwrap();
-            if p.0.doc_idx + 1 <= index.get(&p.0.token).unwrap().len() as u32 - 1 {
-                let postings = index.get(&p.0.token).unwrap();
+            let postings = match index.get(&p.0.token) {
+                Some(postings) => postings,
+                None => continue,
+            };
+
+            if p.0.doc_idx + 1 <= postings.len() as u32 - 1 {
                 pointer.push(Reverse(TokenDocPointer {
                     doc_id: Ulid(postings[p.0.doc_idx as usize + 1].doc_id),
                     doc_idx: p.0.doc_idx + 1,
@@ -131,19 +136,22 @@ impl<'a> PostingListIntersection<'a> {
         pointer: &mut BinaryHeap<Reverse<TokenDocPointer>>,
         target_doc: &Ulid,
     ) -> Vec<TokenDocPointer> {
-        while !pointer.is_empty() && pointer.peek().unwrap().0.doc_id < *target_doc {
+        while let Some(p) = pointer.peek()
+            && p.0.doc_id < *target_doc
+        {
             let doc = pointer.pop().unwrap();
-            let new_idx = match index
-                .get(&doc.0.token)
-                .unwrap()
-                .binary_search_by(|posting| posting.doc_id.cmp(&target_doc.0))
-            {
-                Ok(idx) => idx,
-                Err(idx) => idx,
+            let postings = match index.get(&doc.0.token) {
+                Some(postings) => postings,
+                None => continue,
             };
 
-            if new_idx <= index.get(&doc.0.token).unwrap().len() - 1 {
-                let postings = index.get(&doc.0.token).unwrap();
+            let new_idx =
+                match postings.binary_search_by(|posting| posting.doc_id.cmp(&target_doc.0)) {
+                    Ok(idx) => idx,
+                    Err(idx) => idx,
+                };
+
+            if new_idx <= postings.len() - 1 {
                 pointer.push(Reverse(TokenDocPointer {
                     doc_id: Ulid(postings[new_idx].doc_id),
                     doc_idx: new_idx as u32,
@@ -182,7 +190,11 @@ impl<'a> Iterator for PostingListIntersection<'a> {
             }
         }
 
-        let mut target_doc = self.docs.iter().max_by(|x, y| x[0].cmp(&y[0])).unwrap()[0].doc_id;
+        let mut target_doc = match self.docs.iter().max_by(|x, y| x[0].cmp(&y[0])) {
+            Some(docs) => docs[0].doc_id,
+            None => return None,
+        };
+
         loop {
             if same {
                 return Some(self.docs.clone());

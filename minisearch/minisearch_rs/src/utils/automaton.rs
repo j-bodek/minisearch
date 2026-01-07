@@ -54,8 +54,7 @@ impl LevenshteinDfa {
 
         let mut states_stack = vec![states];
 
-        while states_stack.len() > 0 {
-            let states = states_stack.pop().unwrap();
+        while let Some(states) = states_stack.pop() {
             let mut transitions: HashMap<u32, LevenshteinDfaState, BuildNoHashHasher<u32>> =
                 HashMap::default();
 

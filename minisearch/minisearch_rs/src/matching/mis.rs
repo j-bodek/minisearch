@@ -98,7 +98,9 @@ impl<'a> TokenGroupIterator<'a> {
     }
 
     fn closest(&mut self, target: u32) -> Option<u32> {
-        while !self.heap.is_empty() && self.heap.peek().unwrap().0.position <= target {
+        while let Some(pos) = self.heap.peek()
+            && pos.0.position <= target
+        {
             let pos = self.heap.pop().unwrap();
             while let Some(val) = self.tokens[pos.0.idx].positions.next() {
                 if *val > target {
@@ -115,8 +117,7 @@ impl<'a> TokenGroupIterator<'a> {
     }
 
     fn next(&mut self) -> Option<u32> {
-        if !self.heap.is_empty() {
-            let pos = self.heap.pop().unwrap();
+        if let Some(pos) = self.heap.pop() {
             if let Some(val) = self.tokens[pos.0.idx].positions.next() {
                 self.heap.push(Reverse(TokenPosition {
                     position: *val,
@@ -129,16 +130,16 @@ impl<'a> TokenGroupIterator<'a> {
     }
 
     fn peek(&self) -> Option<u32> {
-        if !self.heap.is_empty() {
-            return Some(self.heap.peek().unwrap().0.position);
+        if let Some(pos) = self.heap.peek() {
+            return Some(pos.0.position);
         }
 
         return None;
     }
 
     fn last_meta(&self) -> Option<TokenMeta> {
-        if !self.heap.is_empty() {
-            let token = &self.tokens[self.heap.peek().unwrap().0.idx];
+        if let Some(pos) = self.heap.peek() {
+            let token = &self.tokens[pos.0.idx];
             return Some(TokenMeta {
                 token: token.token.clone(),
                 distance: token.distance,
@@ -160,20 +161,26 @@ impl<'a> MinimalIntervalSemanticMatch<'a> {
         for group in pointers {
             let mut iterator = TokenGroupIterator::new();
             for pointer in group {
-                iterator.add_token_positions(
-                    index.get(&pointer.token).unwrap()[pointer.doc_idx as usize]
-                        .positions
-                        .iter(),
-                    pointer.token,
-                    pointer.distance,
-                );
+                let positions = match index.get(&pointer.token) {
+                    Some(postings) => postings[pointer.doc_idx as usize].positions.iter(),
+                    None => continue,
+                };
+
+                iterator.add_token_positions(positions, pointer.token, pointer.distance);
             }
 
             iterators.push(iterator);
         }
 
+        let mut end = false;
         let window = (0..iterators.len())
-            .map(|i| iterators[i].peek().unwrap())
+            .map(|i| match iterators[i].peek() {
+                Some(pos) => pos,
+                None => {
+                    end = true;
+                    0
+                }
+            })
             .collect::<Vec<u32>>();
 
         let slops = vec![0; iterators.len()];
@@ -183,7 +190,7 @@ impl<'a> MinimalIntervalSemanticMatch<'a> {
             iterators: iterators,
             window: window,
             slops: slops,
-            end: false,
+            end: end,
         }
     }
 }
@@ -215,10 +222,18 @@ impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
 
             let mut result = None;
             if idx == self.iterators.len() {
-                let mut window = vec![];
+                let mut window = Vec::with_capacity(self.window.len());
                 for (iter_idx, token_idx) in self.window.iter().enumerate() {
-                    let meta = self.iterators[iter_idx].last_meta().unwrap();
+                    let meta = match self.iterators[iter_idx].last_meta() {
+                        Some(meta) => meta,
+                        None => break,
+                    };
+
                     window.push((*token_idx, meta.token, meta.tf, meta.distance));
+                }
+
+                if window.len() < self.window.len() {
+                    break;
                 }
 
                 let _ = result.insert(MisResult {
@@ -243,9 +258,8 @@ impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
                 None => self.end = true,
             };
 
-            match result {
-                Some(res) => return Some(res),
-                _ => (),
+            if result.is_some() {
+                return result;
             }
         }
 

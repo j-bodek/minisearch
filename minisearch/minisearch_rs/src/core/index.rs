@@ -11,8 +11,8 @@ use std::time::SystemTime;
 use std::{io, path::PathBuf};
 
 use bincode::config::Configuration;
-use bincode::enc::write::SizeWriter;
 use bincode::enc::EncoderImpl;
+use bincode::enc::write::SizeWriter;
 use bincode::error::EncodeError;
 use bincode::{Decode, Encode};
 use hashbrown::hash_map::Entry;
@@ -146,6 +146,7 @@ struct AddLog<'a> {
 
 impl<'a> IndexLog for AddLog<'a> {
     fn from_bytes(bytes: &[u8]) -> Self {
+        // todo: custom decode error
         let header =
             LogHeader::from_bytes(bytes[..LogHeader::ENCODED_SIZE].try_into().unwrap()).unwrap();
         let (posting, _): (Posting, usize) = bincode::decode_from_slice(
@@ -345,8 +346,8 @@ struct LogsReader<'a> {
 
 impl<'a> LogsReader<'a> {
     fn new(index_dir: &PathBuf, direction: ReadDirection) -> Result<Self, io::Error> {
-        let file = File::open(&index_dir.join("index")).unwrap();
-        let mmap = unsafe { Mmap::map(&file).unwrap() };
+        let file = File::open(&index_dir.join("index"))?;
+        let mmap = unsafe { Mmap::map(&file)? };
         Ok(Self {
             _marker: PhantomData,
             mmap: mmap,

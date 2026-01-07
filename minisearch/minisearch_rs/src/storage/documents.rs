@@ -1,6 +1,6 @@
 use bincode::config::Configuration;
-use bincode::enc::write::SizeWriter;
 use bincode::enc::EncoderImpl;
+use bincode::enc::write::SizeWriter;
 use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
 use lz4_flex::block::{compress_into, decompress_size_prepended, get_maximum_output_size};
@@ -69,7 +69,7 @@ impl Document {
                         return Err(PyValueError::new_err(format!(
                             "Failed to decompress document content: {}",
                             err
-                        )))
+                        )));
                     }
                 };
                 let data = String::from_utf8(data)?;
@@ -101,6 +101,8 @@ struct Buffer {
     documents: Vec<u8>,
     meta: Vec<u8>,
 }
+
+// TODO implement custom encode, decode errors (optionaly propagate systemtime error?)
 
 impl Buffer {
     fn new() -> Self {
@@ -190,7 +192,7 @@ impl DocumentsManager {
                     let mut del = File::open(path.join("del"))?;
                     let del_size = del.metadata()?.len();
 
-                    while del.stream_position().unwrap() < del_size {
+                    while del.stream_position()? < del_size {
                         let mut ulid = [0u8; 16];
                         del.read_exact(&mut ulid)?;
                         del.seek_relative(8)?; // skip 'deleted size'
@@ -200,7 +202,7 @@ impl DocumentsManager {
                     let mut meta = File::open(path.join("meta"))?;
                     let meta_size = meta.metadata()?.len();
 
-                    while meta.stream_position().unwrap() < meta_size {
+                    while meta.stream_position()? < meta_size {
                         let mut size = [0u8; 8];
                         meta.read_exact(&mut size)?;
                         let size = u64::from_be_bytes(size);
@@ -339,7 +341,7 @@ impl DocumentsManager {
             let mut del = File::open(path.join("del"))?;
             let del_size = del.metadata()?.len();
 
-            while del.stream_position().unwrap() < del_size {
+            while del.stream_position()? < del_size {
                 let mut ulid = [0u8; 16];
                 del.read_exact(&mut ulid)?;
                 del.seek_relative(8)?; // skip 'deleted size'
@@ -350,7 +352,7 @@ impl DocumentsManager {
             let mut meta = File::open(path.join("meta"))?;
             let meta_size = meta.metadata()?.len();
 
-            while meta.stream_position().unwrap() < meta_size {
+            while meta.stream_position()? < meta_size {
                 let mut size_buf = [0u8; 8];
                 meta.read_exact(&mut size_buf)?;
                 let size = u64::from_be_bytes(size_buf);
@@ -419,10 +421,10 @@ impl DocumentsManager {
 
                     let name = match path
                         .file_name()
-                        .unwrap()
+                        .unwrap_or_default()
                         .to_os_string()
                         .to_str()
-                        .unwrap()
+                        .unwrap_or_default()
                         .parse::<u128>()
                     {
                         Ok(val) => val,
@@ -435,7 +437,7 @@ impl DocumentsManager {
                     let del_size = del.metadata()?.len();
                     let mut deleted = 0;
 
-                    while del.stream_position().unwrap() < del_size {
+                    while del.stream_position()? < del_size {
                         let mut size = [0u8; 8];
                         del.seek_relative(16)?; // skip 'ulid'
                         del.read_exact(&mut size)?;

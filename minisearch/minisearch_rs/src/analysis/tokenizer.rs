@@ -69,7 +69,6 @@ impl Tokenizer {
     }
 
     pub fn tokenize_query(&mut self, query: Query) -> TokenizedQuery {
-        // TODO: unicode segmentation for query?
         let mut tokens: Vec<Token> = Vec::with_capacity(query.terms.len());
 
         for term in query.terms {

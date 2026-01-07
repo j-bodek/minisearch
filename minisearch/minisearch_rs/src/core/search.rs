@@ -156,7 +156,7 @@ impl Search {
                 return Err(PyValueError::new_err(format!(
                     "Failed to load TokenHasher {}",
                     e.to_string()
-                )))
+                )));
             }
         };
         for token in hasher.tokens() {
@@ -176,6 +176,7 @@ impl Search {
     }
 
     fn add(&mut self, mut doc: String) -> PyResult<String> {
+        // todo: add custom error for ulid generator
         let doc_id = self.ulid_generator.generate().unwrap();
 
         let (tokens_num, tokens_map) = self.tokenizer.tokenize_doc(&mut doc);
@@ -218,7 +219,7 @@ impl Search {
                 return Err(PyValueError::new_err(format!(
                     "Invalid ULID: {}",
                     e.to_string()
-                )))
+                )));
             }
         };
 
@@ -228,7 +229,7 @@ impl Search {
                 return Err(PyKeyError::new_err(format!(
                     "Document with id: {} does not exist",
                     id,
-                )))
+                )));
             }
         };
 
@@ -242,7 +243,7 @@ impl Search {
                 return Err(PyValueError::new_err(format!(
                     "Invalid ULID: {}",
                     e.to_string()
-                )))
+                )));
             }
         };
 
@@ -303,14 +304,14 @@ impl Search {
             for mis_result in
                 MinimalIntervalSemanticMatch::new(&self.index_manager.index, pointers, slop as i32)
             {
+                let doc = match self.documents_manager.docs.get(&doc_id) {
+                    Some(doc) => doc,
+                    None => continue,
+                };
+
                 score = bm25(
                     self.documents_manager.docs.len() as u64,
-                    self.documents_manager
-                        .docs
-                        .get(&doc_id)
-                        .unwrap()
-                        .tokens
-                        .len() as u32,
+                    doc.tokens.len() as u32,
                     self.meta.data.avg_doc_len,
                     &self.index_manager.index,
                     mis_result,
@@ -337,15 +338,12 @@ impl Search {
         Ok(results
             .into_sorted_vec()
             .into_iter()
-            .map(|r| {
-                (
-                    r.0.score,
-                    self.documents_manager
-                        .docs
-                        .get(&r.0.doc_id)
-                        .unwrap()
-                        .clone(), //todo remove this unwrap
-                )
+            .filter_map(|r| {
+                if let Some(doc) = self.documents_manager.docs.get(&r.0.doc_id) {
+                    Some((r.0.score, doc.clone()))
+                } else {
+                    None
+                }
             })
             .collect())
     }
