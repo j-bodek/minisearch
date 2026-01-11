@@ -61,12 +61,12 @@ impl<'a> Query<'a> {
             .at_least(1)
             .to_slice();
 
-        // FUZZ = "~" + optional number
         let number = text::digits(10)
             .at_least(1)
             .to_slice()
             .map(|s| u8::from_str(s).unwrap());
 
+        // FUZZ = "~" + optional number
         let fuzz = just('~')
             .ignore_then(number.or_not().map(|num| match num {
                 Some(v) => Fuzz::Strict(v),

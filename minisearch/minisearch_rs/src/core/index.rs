@@ -3,22 +3,22 @@ use crate::utils::trie::Trie;
 
 use std::array::TryFromSliceError;
 use std::borrow::Cow;
-use std::error::Error;
 use std::fs::{self, File};
 use std::io::Write;
 use std::marker::PhantomData;
-use std::time::SystemTime;
+use std::time::{SystemTime, SystemTimeError};
 use std::{io, path::PathBuf};
 
 use bincode::config::Configuration;
 use bincode::enc::EncoderImpl;
 use bincode::enc::write::SizeWriter;
-use bincode::error::EncodeError;
+use bincode::error::{DecodeError, EncodeError};
 use bincode::{Decode, Encode};
 use hashbrown::hash_map::Entry;
 use hashbrown::{HashMap, HashSet};
 use memmap2::Mmap;
 use nohash_hasher::BuildNoHashHasher;
+use pyo3::exceptions::{PySystemError, PyValueError};
 use std::fmt::Debug;
 use thiserror::Error;
 
@@ -26,6 +26,76 @@ use ulid::Ulid;
 
 static BUFFER_THRESHOLD: u64 = 1024 * 1024;
 static SAVE_SECS_THRESHOLD: u64 = 5;
+
+// TODO: create proper errors later
+#[derive(Error, Debug)]
+pub enum FromBytesError {
+    #[error(transparent)]
+    TryFromSliceError(#[from] TryFromSliceError),
+    #[error("Failed to decode log operation")]
+    OperationDecodeError,
+    #[error(transparent)]
+    DecodeError(#[from] DecodeError),
+}
+
+#[derive(Error, Debug)]
+pub enum LogsReaderError {
+    #[error(transparent)]
+    FromBytesError(#[from] FromBytesError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+impl From<LogsReaderError> for pyo3::PyErr {
+    fn from(err: LogsReaderError) -> Self {
+        match err {
+            // todo: custom python exception for that
+            LogsReaderError::FromBytesError(err) => PyValueError::new_err(err.to_string()),
+            LogsReaderError::Io(err) => pyo3::PyErr::from(err),
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum IndexManagerError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Time(#[from] SystemTimeError),
+    #[error(transparent)]
+    BufferWriteError(#[from] BufferWriteError),
+    #[error(transparent)]
+    LogsReaderError(#[from] LogsReaderError),
+}
+
+impl From<IndexManagerError> for pyo3::PyErr {
+    fn from(err: IndexManagerError) -> pyo3::PyErr {
+        match err {
+            IndexManagerError::Io(err) => pyo3::PyErr::from(err),
+            IndexManagerError::Time(err) => PySystemError::new_err(err.to_string()),
+            IndexManagerError::BufferWriteError(err) => err.into(),
+            IndexManagerError::LogsReaderError(err) => err.into(),
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum BufferWriteError {
+    #[error(transparent)]
+    EncodeError(#[from] EncodeError),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+impl From<BufferWriteError> for pyo3::PyErr {
+    fn from(err: BufferWriteError) -> pyo3::PyErr {
+        match err {
+            BufferWriteError::Io(err) => pyo3::PyErr::from(err),
+            //todo:  Create custom py exception type for EncodeError
+            BufferWriteError::EncodeError(err) => PyValueError::new_err(err.to_string()),
+        }
+    }
+}
 
 #[derive(Debug)]
 struct LogMeta {
@@ -62,28 +132,21 @@ enum LogOperation {
     ADD = 1,
 }
 
-// TODO: create proper errors later
-#[derive(Error, Debug)]
-enum FromBytesError {
-    #[error("Failed to convert data from slice")]
-    TryFromSliceError(#[from] TryFromSliceError),
-    #[error("Failed to decode data")]
-    DecodeError,
-}
-
 impl LogOperation {
     fn from_u8(val: u8) -> Result<Self, FromBytesError> {
         match val {
             0 => Ok(Self::DELETE),
             1 => Ok(Self::ADD),
-            _ => Err(FromBytesError::DecodeError),
+            _ => Err(FromBytesError::OperationDecodeError),
         }
     }
 }
 
 trait IndexLog: Debug {
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError>;
-    fn from_bytes(bytes: &[u8]) -> Self;
+    fn from_bytes(bytes: &[u8]) -> Result<Self, FromBytesError>
+    where
+        Self: Sized;
 }
 
 enum IndexLogImpl<'a> {
@@ -103,8 +166,8 @@ impl<'a> IndexLogImpl<'a> {
 fn decode_log<'a>(bytes: &[u8]) -> Result<IndexLogImpl<'a>, FromBytesError> {
     let operation = LogOperation::from_u8(u8::from_be_bytes(bytes[..1].try_into()?))?;
     match operation {
-        LogOperation::ADD => Ok(IndexLogImpl::Add(AddLog::from_bytes(bytes))),
-        LogOperation::DELETE => Ok(IndexLogImpl::Delete(DeleteLog::from_bytes(bytes))),
+        LogOperation::ADD => Ok(IndexLogImpl::Add(AddLog::from_bytes(bytes)?)),
+        LogOperation::DELETE => Ok(IndexLogImpl::Delete(DeleteLog::from_bytes(bytes)?)),
     }
 }
 
@@ -145,20 +208,18 @@ struct AddLog<'a> {
 }
 
 impl<'a> IndexLog for AddLog<'a> {
-    fn from_bytes(bytes: &[u8]) -> Self {
+    fn from_bytes(bytes: &[u8]) -> Result<Self, FromBytesError> {
         // todo: custom decode error
-        let header =
-            LogHeader::from_bytes(bytes[..LogHeader::ENCODED_SIZE].try_into().unwrap()).unwrap();
+        let header = LogHeader::from_bytes(bytes[..LogHeader::ENCODED_SIZE].try_into()?)?;
         let (posting, _): (Posting, usize) = bincode::decode_from_slice(
             &bytes[LogHeader::ENCODED_SIZE..],
             bincode::config::standard(),
-        )
-        .unwrap();
+        )?;
 
-        Self {
+        Ok(Self {
             header: header,
             posting: Cow::Owned(posting),
-        }
+        })
     }
 
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError> {
@@ -176,8 +237,7 @@ impl<'a> IndexLog for AddLog<'a> {
 
         vec.resize(offset + header_size + posting_size, 0);
         let posting_size =
-            bincode::encode_into_slice(&self.posting, &mut vec[offset + header_size..], config)
-                .unwrap();
+            bincode::encode_into_slice(&self.posting, &mut vec[offset + header_size..], config)?;
 
         vec.truncate(offset + header_size + posting_size);
 
@@ -205,11 +265,10 @@ struct DeleteLog {
 }
 
 impl IndexLog for DeleteLog {
-    fn from_bytes(bytes: &[u8]) -> Self {
-        // TODO: proper error handling
-        Self {
-            header: LogHeader::from_bytes(bytes.try_into().unwrap()).unwrap(),
-        }
+    fn from_bytes(bytes: &[u8]) -> Result<Self, FromBytesError> {
+        Ok(Self {
+            header: LogHeader::from_bytes(bytes.try_into()?)?,
+        })
     }
 
     fn encode_into_vec(&self, vec: &mut Vec<u8>) -> Result<(usize, usize), EncodeError> {
@@ -250,7 +309,7 @@ impl Buffer {
         }
     }
 
-    fn write<T: IndexLog>(&mut self, doc_id: u128, log: T) -> Result<(), Box<dyn Error>> {
+    fn write<T: IndexLog>(&mut self, doc_id: u128, log: T) -> Result<(), BufferWriteError> {
         let (offset, size) = log.encode_into_vec(&mut self.index)?;
 
         let meta = LogMeta {
@@ -357,20 +416,23 @@ impl<'a> LogsReader<'a> {
 }
 
 impl<'a> Iterator for LogsReader<'a> {
-    type Item = Result<(LogMeta, IndexLogImpl<'a>), io::Error>;
+    type Item = Result<(LogMeta, IndexLogImpl<'a>), LogsReaderError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let meta = match self.meta_reader.next() {
             Some(m) => match m {
                 Ok(log) => log,
-                Err(e) => return Some(Err(e)),
+                Err(e) => return Some(Err(LogsReaderError::Io(e))),
             },
             None => return None,
         };
 
         // TODO: add proper error handling
         let bytes = &self.mmap[meta.offset as usize..(meta.offset as usize + meta.size as usize)];
-        let log = decode_log(bytes).unwrap();
+        let log = match decode_log(bytes) {
+            Ok(log) => log,
+            Err(e) => return Some(Err(LogsReaderError::FromBytesError(e))),
+        };
 
         Some(Ok((meta, log)))
     }
@@ -382,11 +444,10 @@ struct LogsManager {
 }
 
 impl LogsManager {
-    fn new(dir: PathBuf) -> Self {
-        Self {
+    fn new(dir: PathBuf) -> Result<Self, SystemTimeError> {
+        Ok(Self {
             last_save: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
+                .duration_since(SystemTime::UNIX_EPOCH)?
                 .as_secs(),
             buffer: Buffer {
                 dir: dir,
@@ -394,14 +455,13 @@ impl LogsManager {
                 index: Vec::new(),
                 meta: Vec::new(),
             },
-        }
+        })
     }
 
-    fn write<T: IndexLog>(&mut self, doc_id: u128, log: T) -> Result<(), Box<dyn Error>> {
+    fn write<T: IndexLog>(&mut self, doc_id: u128, log: T) -> Result<(), IndexManagerError> {
         self.buffer.write(doc_id, log)?;
         let cur_ts = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs();
 
         if self.buffer.index.len() as u64 > BUFFER_THRESHOLD
@@ -417,7 +477,7 @@ impl LogsManager {
     fn load(
         &self,
         direction: ReadDirection,
-    ) -> Result<HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>, io::Error> {
+    ) -> Result<HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>, LogsReaderError> {
         let reader = LogsReader::new(&self.buffer.dir, direction)?;
 
         let mut index: HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>> = HashMap::default();
@@ -488,7 +548,7 @@ pub struct IndexManager {
 }
 
 impl IndexManager {
-    pub fn load(dir: &PathBuf) -> Result<Self, io::Error> {
+    pub fn load(dir: &PathBuf) -> Result<Self, IndexManagerError> {
         let index_dir = dir.join("index");
         let (index, meta) = (index_dir.join("index"), index_dir.join("meta"));
         if !fs::exists(&index_dir)? || !fs::exists(&index)? || !fs::exists(&meta)? {
@@ -497,7 +557,7 @@ impl IndexManager {
             File::create(&meta)?;
         }
 
-        let logs_manager = LogsManager::new(index_dir);
+        let logs_manager = LogsManager::new(index_dir)?;
 
         Ok(Self {
             index: logs_manager.load(ReadDirection::BACKWARD)?,
@@ -505,7 +565,7 @@ impl IndexManager {
         })
     }
 
-    pub fn insert(&mut self, token: u32, posting: Posting) -> Result<(), Box<dyn Error>> {
+    pub fn insert(&mut self, token: u32, posting: Posting) -> Result<(), IndexManagerError> {
         let postings = self.index.entry(token).or_default();
         let log = AddLog::new(token, postings.len() as u32 + 1, &posting);
         self.logs_manager.write(posting.doc_id, log)?;
@@ -520,7 +580,7 @@ impl IndexManager {
         document_ids: &HashSet<Ulid>,
         fuzzy_trie: &mut Trie,
         hasher: &mut TokenHasher,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), IndexManagerError> {
         for token in tokens {
             let postings = match self.index.get_mut(token) {
                 Some(postings) => postings,

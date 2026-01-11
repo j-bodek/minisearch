@@ -101,18 +101,17 @@ impl TokenHasher {
     }
 
     pub fn delete(&mut self, token: u32) -> Result<Option<String>, io::Error> {
-        if token as usize >= self.tokens_store.tokens.len()
-            || self.tokens_store.tokens[token as usize].is_none()
+        if let Some(token_str) = self.tokens_store.tokens.get_mut(token as usize)
+            && let Some(token_str) = token_str.take()
         {
-            return Ok(None);
+            self.tokens_store.deleted.push(token);
+            self.tokens_store.map.remove(&token_str);
+            self.operations += 1;
+            self.save()?;
+            return Ok(Some(token_str));
         }
 
-        let token_str = self.tokens_store.tokens[token as usize].take().unwrap();
-        self.tokens_store.deleted.push(token);
-        self.tokens_store.map.remove(&token_str);
-        self.operations += 1;
-        self.save()?;
-        Ok(Some(token_str))
+        Ok(None)
     }
 
     pub fn hash(&self, token: &String) -> Option<u32> {
