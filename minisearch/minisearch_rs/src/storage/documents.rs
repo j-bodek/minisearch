@@ -1,26 +1,87 @@
 use bincode::config::Configuration;
 use bincode::enc::EncoderImpl;
 use bincode::enc::write::SizeWriter;
+use bincode::error::{DecodeError, EncodeError};
 use bincode::{Decode, Encode};
 use hashbrown::{HashMap, HashSet};
-use lz4_flex::block::{compress_into, decompress_size_prepended, get_maximum_output_size};
+use lz4_flex::block::{
+    CompressError, compress_into, decompress_size_prepended, get_maximum_output_size,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use std::error::Error;
 use std::fs::remove_dir_all;
 use std::io::{self, prelude::*};
 use std::os::unix::prelude::FileExt;
+use std::time::SystemTimeError;
 use std::{
     fs::{self, File},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+use thiserror::Error;
 use ulid::Ulid;
 
 static SEGMENT_THRESHOLD: u64 = 50 * 1024 * 1024;
 static DOCUMENTS_BUFFER_THRESHOLD: u64 = 1024 * 1024;
 static SAVE_SECS_THRESHOLD: u64 = 5;
 static MERGE_THRESHOLD: f64 = 0.3;
+
+#[derive(Error, Debug)]
+pub enum WriteBufferError {
+    #[error(transparent)]
+    CompressError(#[from] CompressError),
+    #[error(transparent)]
+    EncodeError(#[from] EncodeError),
+}
+
+impl From<WriteBufferError> for pyo3::PyErr {
+    fn from(err: WriteBufferError) -> Self {
+        match err {
+            WriteBufferError::CompressError(err) => PyValueError::new_err(err.to_string()),
+            WriteBufferError::EncodeError(err) => PyValueError::new_err(err.to_string()),
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum DocumentWriteError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    WriteBufferError(#[from] WriteBufferError),
+}
+
+impl From<DocumentWriteError> for pyo3::PyErr {
+    fn from(err: DocumentWriteError) -> Self {
+        match err {
+            DocumentWriteError::Io(err) => err.into(),
+            DocumentWriteError::WriteBufferError(err) => err.into(),
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum DocumentManagerError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Time(#[from] SystemTimeError),
+    #[error(transparent)]
+    DecodeError(#[from] DecodeError),
+    #[error(transparent)]
+    WriteBufferError(#[from] WriteBufferError),
+}
+
+impl From<DocumentManagerError> for pyo3::PyErr {
+    fn from(err: DocumentManagerError) -> Self {
+        match err {
+            DocumentManagerError::Io(err) => err.into(),
+            DocumentManagerError::Time(err) => PyValueError::new_err(err.to_string()),
+            DocumentManagerError::DecodeError(err) => PyValueError::new_err(err.to_string()),
+            DocumentManagerError::WriteBufferError(err) => err.into(),
+        }
+    }
+}
 
 #[pyclass(name = "Document")]
 #[derive(Decode, Encode, PartialEq, Debug, Clone)]
@@ -113,21 +174,21 @@ impl Buffer {
         }
     }
 
-    fn write_document(&mut self, doc: &str) -> (usize, usize) {
+    fn write_document(&mut self, doc: &str) -> Result<(usize, usize), WriteBufferError> {
         // preappend document length
         self.documents.extend((doc.len() as u32).to_le_bytes());
         let offset = self.documents.len();
 
         self.documents
             .resize(offset + get_maximum_output_size(doc.len()), 0);
-        let compressed_size = compress_into(doc.as_bytes(), &mut self.documents[offset..]).unwrap();
+        let compressed_size = compress_into(doc.as_bytes(), &mut self.documents[offset..])?;
         self.documents.truncate(offset + compressed_size);
 
         // 4 bytes for extra preappended document length
-        (offset - 4, compressed_size + 4)
+        Ok((offset - 4, compressed_size + 4))
     }
 
-    fn write_meta(&mut self, doc: &Document) -> Result<(), Box<dyn Error>> {
+    fn write_meta(&mut self, doc: &Document) -> Result<(), WriteBufferError> {
         let config = bincode::config::standard();
         let size = {
             let mut size_writer =
@@ -140,7 +201,7 @@ impl Buffer {
         let offset = self.meta.len();
         self.meta.resize(offset + size, 0);
 
-        let size = bincode::encode_into_slice(&doc, &mut self.meta[offset..], config).unwrap();
+        let size = bincode::encode_into_slice(&doc, &mut self.meta[offset..], config)?;
         self.meta.truncate(offset + size);
         Ok(())
     }
@@ -175,7 +236,7 @@ pub struct DocumentsManager {
 }
 
 impl DocumentsManager {
-    pub fn load(dir: PathBuf) -> Result<Self, io::Error> {
+    pub fn load(dir: PathBuf) -> Result<Self, DocumentManagerError> {
         let (mut documents, mut segments_map) = (HashMap::new(), HashMap::new());
 
         let cur_segment = match Self::segments(&dir)? {
@@ -183,6 +244,7 @@ impl DocumentsManager {
                 let mut deletes = HashSet::new();
                 let cur_segment = segments
                     .iter()
+                    //todo:  first convert names into u64 to perform numeric cmp
                     .max_by(|(_, x), (_, y)| x.name.cmp(&y.name))
                     .unwrap()
                     .0
@@ -209,7 +271,7 @@ impl DocumentsManager {
                         let mut doc = vec![0u8; size as usize];
                         meta.read_exact(&mut doc)?;
                         let (doc, _): (Document, usize) =
-                            bincode::decode_from_slice(&doc, bincode::config::standard()).unwrap();
+                            bincode::decode_from_slice(&doc, bincode::config::standard())?;
 
                         let ulid = Ulid::from_bytes(doc.id);
                         if deletes.contains(&ulid) {
@@ -238,8 +300,7 @@ impl DocumentsManager {
             segments: segments_map,
             cur_segment: cur_segment,
             last_save: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
+                .duration_since(SystemTime::UNIX_EPOCH)?
                 .as_secs(),
         })
     }
@@ -265,9 +326,9 @@ impl DocumentsManager {
         id: Ulid,
         tokens: Vec<u32>,
         content: &str,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), DocumentManagerError> {
         // write segment to buffer
-        let (data_offset, size) = self.buffer.write_document(&content);
+        let (data_offset, size) = self.buffer.write_document(&content)?;
         let offset = self.buffer.segment_size(&self.cur_segment)? + data_offset as u64;
 
         let doc = Document::new(
@@ -322,7 +383,7 @@ impl DocumentsManager {
         Ok(())
     }
 
-    pub fn merge(&mut self) -> Result<(), io::Error> {
+    pub fn merge(&mut self) -> Result<(), DocumentManagerError> {
         // Merges the segments cleaning up deleted data
 
         let mut segments = self
@@ -359,7 +420,7 @@ impl DocumentsManager {
                 let mut doc_buf = vec![0u8; size as usize];
                 meta.read_exact(&mut doc_buf)?;
                 let (doc, _): (Document, usize) =
-                    bincode::decode_from_slice(&doc_buf, bincode::config::standard()).unwrap();
+                    bincode::decode_from_slice(&doc_buf, bincode::config::standard())?;
 
                 let ulid = Ulid::from_bytes(doc.id);
                 if deletes.contains(&ulid) {
@@ -386,11 +447,8 @@ impl DocumentsManager {
         Ok(())
     }
 
-    fn create_segment(dir: &PathBuf) -> Result<(PathBuf, Segment), io::Error> {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+    fn create_segment(dir: &PathBuf) -> Result<(PathBuf, Segment), DocumentManagerError> {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 
         let segment = Path::new(dir).join(ts.to_string());
         fs::create_dir(&segment)?;
@@ -464,14 +522,13 @@ impl DocumentsManager {
         }
     }
 
-    fn save_buffer(&mut self, segment_size: u64) -> Result<(), io::Error> {
+    fn save_buffer(&mut self, segment_size: u64) -> Result<(), DocumentManagerError> {
         if let Some(segment) = self.segments.get_mut(&self.cur_segment) {
             segment.size = segment_size;
         }
 
         let cur_ts = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs();
 
         if self.buffer.documents.len() as u64 > DOCUMENTS_BUFFER_THRESHOLD

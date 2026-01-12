@@ -7,7 +7,7 @@ use crate::query::scoring::{bm25, max_bm25};
 use crate::storage::documents::{Document, DocumentsManager};
 use crate::utils::hasher::TokenHasher;
 use crate::utils::trie::Trie;
-use bincode::error::EncodeError;
+use bincode::error::{DecodeError, EncodeError};
 use bincode::{Decode, Encode};
 use hashbrown::HashSet;
 use pyo3::exceptions::{PyKeyError, PyOSError, PySystemError, PyValueError};
@@ -33,6 +33,8 @@ enum SearchMetaError {
     Time(#[from] SystemTimeError),
     #[error(transparent)]
     EncodeError(#[from] EncodeError),
+    #[error(transparent)]
+    DecodeError(#[from] DecodeError),
 }
 
 impl From<SearchMetaError> for pyo3::PyErr {
@@ -41,6 +43,7 @@ impl From<SearchMetaError> for pyo3::PyErr {
             SearchMetaError::Io(err) => err.into(),
             SearchMetaError::Time(err) => PySystemError::new_err(err.to_string()),
             SearchMetaError::EncodeError(err) => PyValueError::new_err(err.to_string()),
+            SearchMetaError::DecodeError(err) => PyValueError::new_err(err.to_string()),
         }
     }
 }
@@ -49,12 +52,15 @@ impl From<SearchMetaError> for pyo3::PyErr {
 enum UlidError {
     #[error(transparent)]
     MonotonicError(#[from] MonotonicError),
+    #[error(transparent)]
+    DecodeError(#[from] ulid::DecodeError),
 }
 
 impl From<UlidError> for pyo3::PyErr {
     fn from(err: UlidError) -> Self {
         match err {
             UlidError::MonotonicError(err) => PyValueError::new_err(err.to_string()),
+            UlidError::DecodeError(err) => PyValueError::new_err(err.to_string()),
         }
     }
 }
@@ -91,13 +97,7 @@ impl SearchMeta {
 
         let mut file = File::open(&path)?;
         let data: SearchMetaData =
-            match bincode::decode_from_std_read(&mut file, bincode::config::standard()) {
-                Ok(data) => data,
-                Err(e) => {
-                    println!("Warning metadata decode error: {e}");
-                    return Ok(Self::new(path)?);
-                }
-            };
+            bincode::decode_from_std_read(&mut file, bincode::config::standard())?;
 
         Ok(Self {
             path: path,
@@ -236,12 +236,7 @@ impl Search {
             tokens.push(token);
         }
 
-        if let Err(e) = self.documents_manager.write(doc_id, tokens, &doc) {
-            return Err(PyOSError::new_err(format!(
-                "Failed to write document on disk: {}",
-                e
-            )));
-        }
+        self.documents_manager.write(doc_id, tokens, &doc)?;
 
         Ok(doc_id.to_string())
     }
@@ -249,12 +244,7 @@ impl Search {
     fn get(&self, id: String) -> PyResult<Document> {
         let id = match Ulid::from_string(&id) {
             Ok(val) => val,
-            Err(e) => {
-                return Err(PyValueError::new_err(format!(
-                    "Invalid ULID: {}",
-                    e.to_string()
-                )));
-            }
+            Err(e) => return Err(UlidError::DecodeError(e).into()),
         };
 
         let doc = match self.documents_manager.docs.get(&id) {
@@ -273,12 +263,7 @@ impl Search {
     fn delete(&mut self, id: String) -> PyResult<bool> {
         let id = match Ulid::from_string(&id) {
             Ok(val) => val,
-            Err(e) => {
-                return Err(PyValueError::new_err(format!(
-                    "Invalid ULID: {}",
-                    e.to_string()
-                )));
-            }
+            Err(e) => return Err(UlidError::DecodeError(e).into()),
         };
 
         self.deleted_documents.insert(id);
@@ -294,10 +279,7 @@ impl Search {
     }
 
     fn search(&mut self, mut query: String, top_k: u8) -> PyResult<Vec<(f64, Document)>> {
-        let query = match Query::parse(&mut query) {
-            Err(e) => return Err(e),
-            Ok(q) => q,
-        };
+        let query = Query::parse(&mut query)?;
 
         let slop = query.slop;
         let query = self.tokenizer.tokenize_query(query);
@@ -409,17 +391,12 @@ impl Search {
             }
         }
 
-        if let Err(e) = self.index_manager.delete(
+        self.index_manager.delete(
             &tokens,
             &self.deleted_documents,
             &mut self.fuzzy_trie,
             &mut self.hasher,
-        ) {
-            return Err(PyOSError::new_err(format!(
-                "Failed to delete document from index {}",
-                e
-            )));
-        }
+        )?;
 
         self.deleted_documents.drain();
 
