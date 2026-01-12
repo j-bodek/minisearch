@@ -51,7 +51,7 @@ impl From<LogsReaderError> for pyo3::PyErr {
         match err {
             // todo: custom python exception for that
             LogsReaderError::FromBytesError(err) => PyValueError::new_err(err.to_string()),
-            LogsReaderError::Io(err) => pyo3::PyErr::from(err),
+            LogsReaderError::Io(err) => err.into(),
         }
     }
 }
@@ -71,7 +71,7 @@ pub enum IndexManagerError {
 impl From<IndexManagerError> for pyo3::PyErr {
     fn from(err: IndexManagerError) -> pyo3::PyErr {
         match err {
-            IndexManagerError::Io(err) => pyo3::PyErr::from(err),
+            IndexManagerError::Io(err) => err.into(),
             IndexManagerError::Time(err) => PySystemError::new_err(err.to_string()),
             IndexManagerError::BufferWriteError(err) => err.into(),
             IndexManagerError::LogsReaderError(err) => err.into(),
@@ -90,7 +90,7 @@ pub enum BufferWriteError {
 impl From<BufferWriteError> for pyo3::PyErr {
     fn from(err: BufferWriteError) -> pyo3::PyErr {
         match err {
-            BufferWriteError::Io(err) => pyo3::PyErr::from(err),
+            BufferWriteError::Io(err) => err.into(),
             //todo:  Create custom py exception type for EncodeError
             BufferWriteError::EncodeError(err) => PyValueError::new_err(err.to_string()),
         }
@@ -107,7 +107,7 @@ struct LogMeta {
 impl LogMeta {
     const ENCODED_SIZE: usize = 28;
 
-    fn from_bytes(bytes: &[u8]) -> Result<Self, TryFromSliceError> {
+    fn from_bytes(bytes: &[u8]) -> Result<Self, FromBytesError> {
         Ok(Self {
             id: u128::from_be_bytes(bytes[..16].try_into()?),
             offset: u64::from_be_bytes(bytes[16..24].try_into()?),
@@ -303,8 +303,9 @@ impl Buffer {
             Some(size) => Ok(size),
             None => {
                 let index = File::open(&self.dir.join("index"))?;
-                self.index_size.replace(index.metadata()?.len());
-                Ok(self.index_size.unwrap())
+                let size = index.metadata()?.len();
+                self.index_size.replace(size);
+                Ok(size)
             }
         }
     }
@@ -371,18 +372,20 @@ impl MetaReader {
 }
 
 impl Iterator for MetaReader {
-    type Item = Result<LogMeta, io::Error>;
+    type Item = Result<LogMeta, FromBytesError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.offset >= self.file_size as i64 || self.offset < 0 {
             return None;
         }
 
-        let meta = LogMeta::from_bytes(
+        let meta = match LogMeta::from_bytes(
             &self.mmap
                 [self.offset as usize..(self.offset as usize + LogMeta::ENCODED_SIZE as usize)],
-        )
-        .unwrap();
+        ) {
+            Ok(meta) => meta,
+            Err(err) => return Some(Err(err)),
+        };
 
         match self.direction {
             ReadDirection::FORWARD => {
@@ -422,7 +425,7 @@ impl<'a> Iterator for LogsReader<'a> {
         let meta = match self.meta_reader.next() {
             Some(m) => match m {
                 Ok(log) => log,
-                Err(e) => return Some(Err(LogsReaderError::Io(e))),
+                Err(e) => return Some(Err(LogsReaderError::FromBytesError(e))),
             },
             None => return None,
         };

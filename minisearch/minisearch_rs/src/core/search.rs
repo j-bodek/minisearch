@@ -7,21 +7,57 @@ use crate::query::scoring::{bm25, max_bm25};
 use crate::storage::documents::{Document, DocumentsManager};
 use crate::utils::hasher::TokenHasher;
 use crate::utils::trie::Trie;
+use bincode::error::EncodeError;
 use bincode::{Decode, Encode};
 use hashbrown::HashSet;
-use pyo3::exceptions::{PyKeyError, PyOSError, PyValueError};
+use pyo3::exceptions::{PyKeyError, PyOSError, PySystemError, PyValueError};
 use pyo3::prelude::*;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use std::fs::{self, File};
 use std::io;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{SystemTime, SystemTimeError};
 use std::vec::Vec;
-use ulid::{Generator, Ulid};
+use thiserror::Error;
+use ulid::{Generator, MonotonicError, Ulid};
 
 static SEARCH_META_OPERATIONS_THRESHOLD: u32 = 100_000;
 static SAVE_META_SECS_THRESHOLD: u64 = 10;
+
+#[derive(Error, Debug)]
+enum SearchMetaError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Time(#[from] SystemTimeError),
+    #[error(transparent)]
+    EncodeError(#[from] EncodeError),
+}
+
+impl From<SearchMetaError> for pyo3::PyErr {
+    fn from(err: SearchMetaError) -> Self {
+        match err {
+            SearchMetaError::Io(err) => err.into(),
+            SearchMetaError::Time(err) => PySystemError::new_err(err.to_string()),
+            SearchMetaError::EncodeError(err) => PyValueError::new_err(err.to_string()),
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+enum UlidError {
+    #[error(transparent)]
+    MonotonicError(#[from] MonotonicError),
+}
+
+impl From<UlidError> for pyo3::PyErr {
+    fn from(err: UlidError) -> Self {
+        match err {
+            UlidError::MonotonicError(err) => PyValueError::new_err(err.to_string()),
+        }
+    }
+}
 
 #[derive(Decode, Encode, PartialEq, Debug, Clone)]
 struct SearchMetaData {
@@ -36,22 +72,21 @@ struct SearchMeta {
 }
 
 impl SearchMeta {
-    fn new(path: PathBuf) -> Self {
-        Self {
+    fn new(path: PathBuf) -> Result<Self, SearchMetaError> {
+        Ok(Self {
             path: path,
             operations: 0,
             last_save: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
+                .duration_since(SystemTime::UNIX_EPOCH)?
                 .as_secs(),
             data: SearchMetaData { avg_doc_len: 0.0 },
-        }
+        })
     }
 
-    fn load(path: PathBuf) -> Result<Self, io::Error> {
+    fn load(path: PathBuf) -> Result<Self, SearchMetaError> {
         if !fs::exists(&path)? {
             File::create(&path)?;
-            return Ok(Self::new(path));
+            return Ok(Self::new(path)?);
         }
 
         let mut file = File::open(&path)?;
@@ -60,7 +95,7 @@ impl SearchMeta {
                 Ok(data) => data,
                 Err(e) => {
                     println!("Warning metadata decode error: {e}");
-                    return Ok(Self::new(path));
+                    return Ok(Self::new(path)?);
                 }
             };
 
@@ -68,20 +103,22 @@ impl SearchMeta {
             path: path,
             operations: 0,
             last_save: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
+                .duration_since(SystemTime::UNIX_EPOCH)?
                 .as_secs(),
             data: data,
         })
     }
 
-    fn update_avg_doc_len(&mut self, docs_num: usize, new_doc_len: u32) -> Result<(), io::Error> {
+    fn update_avg_doc_len(
+        &mut self,
+        docs_num: usize,
+        new_doc_len: u32,
+    ) -> Result<(), SearchMetaError> {
         self.data.avg_doc_len = (self.data.avg_doc_len * docs_num as f64 + new_doc_len as f64)
             / (docs_num as f64 + 1.0);
 
         let cur_ts = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs();
 
         self.operations += 1;
@@ -97,9 +134,9 @@ impl SearchMeta {
         Ok(())
     }
 
-    fn flush(&self) -> Result<(), io::Error> {
+    fn flush(&self) -> Result<(), SearchMetaError> {
         let mut file = File::create(&self.path)?;
-        bincode::encode_into_std_write(&self.data, &mut file, bincode::config::standard()).unwrap();
+        bincode::encode_into_std_write(&self.data, &mut file, bincode::config::standard())?;
         Ok(())
     }
 }
@@ -176,8 +213,10 @@ impl Search {
     }
 
     fn add(&mut self, mut doc: String) -> PyResult<String> {
-        // todo: add custom error for ulid generator
-        let doc_id = self.ulid_generator.generate().unwrap();
+        let doc_id = match self.ulid_generator.generate() {
+            Ok(id) => id,
+            Err(err) => return Err(UlidError::MonotonicError(err).into()),
+        };
 
         let (tokens_num, tokens_map) = self.tokenizer.tokenize_doc(&mut doc);
 
@@ -192,12 +231,7 @@ impl Search {
                 doc_id: doc_id.0,
                 positions: positions,
             };
-            if let Err(e) = self.index_manager.insert(token, posting) {
-                return Err(PyOSError::new_err(format!(
-                    "Failed to write index on disk: {}",
-                    e
-                )));
-            };
+            self.index_manager.insert(token, posting)?;
 
             tokens.push(token);
         }
@@ -295,7 +329,8 @@ impl Search {
 
             if top_k != 0
                 && results.len() == top_k as usize
-                && results.peek().unwrap().0.score >= max_score
+                && let Some(peek) = results.peek()
+                && peek.0.score >= max_score
             {
                 // skip minimal interval sematic match for non compatative documents
                 continue;
@@ -325,7 +360,9 @@ impl Search {
                         doc_id: doc_id,
                         score: score,
                     }));
-                } else if results.peek().unwrap().0.score < score {
+                } else if let Some(peek) = results.peek()
+                    && peek.0.score < score
+                {
                     let _ = results.pop();
                     results.push(Reverse(SearchResult {
                         doc_id: doc_id,
