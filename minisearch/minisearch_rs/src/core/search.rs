@@ -1,5 +1,6 @@
 use crate::analysis::tokenizer::Tokenizer;
 use crate::core::index::{IndexManager, Posting};
+use crate::errors::{BincodePersistenceError, UlidDecodeError, UlidMonotonicError};
 use crate::matching::intersect::PostingListIntersection;
 use crate::matching::mis::MinimalIntervalSemanticMatch;
 use crate::query::parser::Query;
@@ -7,17 +8,15 @@ use crate::query::scoring::{bm25, max_bm25};
 use crate::storage::documents::{Document, DocumentsManager};
 use crate::utils::hasher::TokenHasher;
 use crate::utils::trie::Trie;
-use bincode::error::{DecodeError, EncodeError};
 use bincode::{Decode, Encode};
 use hashbrown::HashSet;
-use pyo3::exceptions::{PyKeyError, PySystemError, PyValueError};
+use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use std::fs::{self, File};
-use std::io;
 use std::path::PathBuf;
-use std::time::{SystemTime, SystemTimeError};
+use std::time::SystemTime;
 use std::vec::Vec;
 use thiserror::Error;
 use ulid::{Generator, MonotonicError, Ulid};
@@ -26,41 +25,18 @@ static SEARCH_META_OPERATIONS_THRESHOLD: u32 = 100_000;
 static SAVE_META_SECS_THRESHOLD: u64 = 10;
 
 #[derive(Error, Debug)]
-enum SearchMetaError {
-    #[error(transparent)]
-    Io(#[from] io::Error),
-    #[error(transparent)]
-    Time(#[from] SystemTimeError),
-    #[error(transparent)]
-    EncodeError(#[from] EncodeError),
-    #[error(transparent)]
-    DecodeError(#[from] DecodeError),
-}
-
-impl From<SearchMetaError> for pyo3::PyErr {
-    fn from(err: SearchMetaError) -> Self {
-        match err {
-            SearchMetaError::Io(err) => err.into(),
-            SearchMetaError::Time(err) => PySystemError::new_err(err.to_string()),
-            SearchMetaError::EncodeError(err) => PyValueError::new_err(err.to_string()),
-            SearchMetaError::DecodeError(err) => PyValueError::new_err(err.to_string()),
-        }
-    }
-}
-
-#[derive(Error, Debug)]
 enum UlidError {
-    #[error(transparent)]
-    MonotonicError(#[from] MonotonicError),
-    #[error(transparent)]
-    DecodeError(#[from] ulid::DecodeError),
+    #[error("ulid generator: monotonic error: {0}")]
+    UlidMonotonicError(#[from] MonotonicError),
+    #[error("ulid parse: decode failed: {0}")]
+    UlidDecodeError(#[from] ulid::DecodeError),
 }
 
 impl From<UlidError> for pyo3::PyErr {
     fn from(err: UlidError) -> Self {
         match err {
-            UlidError::MonotonicError(err) => PyValueError::new_err(err.to_string()),
-            UlidError::DecodeError(err) => PyValueError::new_err(err.to_string()),
+            UlidError::UlidMonotonicError(err) => UlidMonotonicError::new_err(err.to_string()),
+            UlidError::UlidDecodeError(err) => UlidDecodeError::new_err(err.to_string()),
         }
     }
 }
@@ -78,7 +54,7 @@ struct SearchMeta {
 }
 
 impl SearchMeta {
-    fn new(path: PathBuf) -> Result<Self, SearchMetaError> {
+    fn new(path: PathBuf) -> Result<Self, BincodePersistenceError> {
         Ok(Self {
             path: path,
             operations: 0,
@@ -89,7 +65,7 @@ impl SearchMeta {
         })
     }
 
-    fn load(path: PathBuf) -> Result<Self, SearchMetaError> {
+    fn load(path: PathBuf) -> Result<Self, BincodePersistenceError> {
         if !fs::exists(&path)? {
             File::create(&path)?;
             return Ok(Self::new(path)?);
@@ -113,7 +89,7 @@ impl SearchMeta {
         &mut self,
         docs_num: usize,
         new_doc_len: u32,
-    ) -> Result<(), SearchMetaError> {
+    ) -> Result<(), BincodePersistenceError> {
         self.data.avg_doc_len = (self.data.avg_doc_len * docs_num as f64 + new_doc_len as f64)
             / (docs_num as f64 + 1.0);
 
@@ -134,7 +110,7 @@ impl SearchMeta {
         Ok(())
     }
 
-    fn flush(&self) -> Result<(), SearchMetaError> {
+    fn flush(&self) -> Result<(), BincodePersistenceError> {
         let mut file = File::create(&self.path)?;
         bincode::encode_into_std_write(&self.data, &mut file, bincode::config::standard())?;
         Ok(())
@@ -215,7 +191,7 @@ impl Search {
     fn add(&mut self, mut doc: String) -> PyResult<String> {
         let doc_id = match self.ulid_generator.generate() {
             Ok(id) => id,
-            Err(err) => return Err(UlidError::MonotonicError(err).into()),
+            Err(err) => return Err(UlidError::UlidMonotonicError(err).into()),
         };
 
         let (tokens_num, tokens_map) = self.tokenizer.tokenize_doc(&mut doc);
@@ -244,7 +220,7 @@ impl Search {
     fn get(&self, id: String) -> PyResult<Document> {
         let id = match Ulid::from_string(&id) {
             Ok(val) => val,
-            Err(e) => return Err(UlidError::DecodeError(e).into()),
+            Err(e) => return Err(UlidError::UlidDecodeError(e).into()),
         };
 
         let doc = match self.documents_manager.docs.get(&id) {
@@ -263,7 +239,7 @@ impl Search {
     fn delete(&mut self, id: String) -> PyResult<bool> {
         let id = match Ulid::from_string(&id) {
             Ok(val) => val,
-            Err(e) => return Err(UlidError::DecodeError(e).into()),
+            Err(e) => return Err(UlidError::UlidDecodeError(e).into()),
         };
 
         self.deleted_documents.insert(id);

@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod core;
+pub mod errors;
 pub mod matching;
 pub mod query;
 pub mod storage;

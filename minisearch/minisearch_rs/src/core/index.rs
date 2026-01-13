@@ -1,4 +1,7 @@
-use crate::utils::hasher::{TokenHasher, TokenHasherError};
+use crate::errors::{
+    BincodeDecodeError, BincodePersistenceError, TryFromSliceException, UnknownLogOperation,
+};
+use crate::utils::hasher::TokenHasher;
 use crate::utils::trie::Trie;
 
 use std::array::TryFromSliceError;
@@ -18,7 +21,7 @@ use hashbrown::hash_map::Entry;
 use hashbrown::{HashMap, HashSet};
 use memmap2::Mmap;
 use nohash_hasher::BuildNoHashHasher;
-use pyo3::exceptions::{PySystemError, PyValueError};
+use pyo3::exceptions::PySystemError;
 use std::fmt::Debug;
 use thiserror::Error;
 
@@ -27,30 +30,42 @@ use ulid::Ulid;
 static BUFFER_THRESHOLD: u64 = 1024 * 1024;
 static SAVE_SECS_THRESHOLD: u64 = 5;
 
-// TODO: create proper errors later
 #[derive(Error, Debug)]
 pub enum FromBytesError {
-    #[error(transparent)]
+    #[error("index log decode: invalid bytes: {0}")]
     TryFromSliceError(#[from] TryFromSliceError),
-    #[error("Failed to decode log operation")]
-    OperationDecodeError,
-    #[error(transparent)]
-    DecodeError(#[from] DecodeError),
+    #[error("index log decode: unknown operation '{0}', only 0 and 1 are allowed")]
+    UnknownLogOperation(u8),
+    #[error("index log decode: bincode decode failed: {0}")]
+    BincodeDecodeError(#[from] DecodeError),
+}
+
+impl From<FromBytesError> for pyo3::PyErr {
+    fn from(err: FromBytesError) -> Self {
+        match err {
+            FromBytesError::TryFromSliceError(err) => {
+                TryFromSliceException::new_err(err.to_string())
+            }
+            FromBytesError::UnknownLogOperation(err) => {
+                UnknownLogOperation::new_err(err.to_string())
+            }
+            FromBytesError::BincodeDecodeError(err) => BincodeDecodeError::new_err(err.to_string()),
+        }
+    }
 }
 
 #[derive(Error, Debug)]
 pub enum LogsReaderError {
-    #[error(transparent)]
+    #[error("logs reader: log decode failed: {0}")]
     FromBytesError(#[from] FromBytesError),
-    #[error(transparent)]
+    #[error("logs reader: io error: {0}")]
     Io(#[from] io::Error),
 }
 
 impl From<LogsReaderError> for pyo3::PyErr {
     fn from(err: LogsReaderError) -> Self {
         match err {
-            // todo: custom python exception for that
-            LogsReaderError::FromBytesError(err) => PyValueError::new_err(err.to_string()),
+            LogsReaderError::FromBytesError(err) => err.into(),
             LogsReaderError::Io(err) => err.into(),
         }
     }
@@ -58,16 +73,14 @@ impl From<LogsReaderError> for pyo3::PyErr {
 
 #[derive(Error, Debug)]
 pub enum IndexManagerError {
-    #[error(transparent)]
+    #[error("index manager: io error: {0}")]
     Io(#[from] io::Error),
-    #[error(transparent)]
+    #[error("index manager: system time error: {0}")]
     Time(#[from] SystemTimeError),
-    #[error(transparent)]
-    BufferWriteError(#[from] BufferWriteError),
-    #[error(transparent)]
+    #[error("index manager: logs reader error: {0}")]
     LogsReaderError(#[from] LogsReaderError),
-    #[error(transparent)]
-    TokenHasherError(#[from] TokenHasherError),
+    #[error("index manager: bincode persistence error: {0}")]
+    BincodePersistenceError(#[from] BincodePersistenceError),
 }
 
 impl From<IndexManagerError> for pyo3::PyErr {
@@ -75,27 +88,8 @@ impl From<IndexManagerError> for pyo3::PyErr {
         match err {
             IndexManagerError::Io(err) => err.into(),
             IndexManagerError::Time(err) => PySystemError::new_err(err.to_string()),
-            IndexManagerError::BufferWriteError(err) => err.into(),
             IndexManagerError::LogsReaderError(err) => err.into(),
-            IndexManagerError::TokenHasherError(err) => err.into(),
-        }
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum BufferWriteError {
-    #[error(transparent)]
-    EncodeError(#[from] EncodeError),
-    #[error(transparent)]
-    Io(#[from] io::Error),
-}
-
-impl From<BufferWriteError> for pyo3::PyErr {
-    fn from(err: BufferWriteError) -> pyo3::PyErr {
-        match err {
-            BufferWriteError::Io(err) => err.into(),
-            //todo:  Create custom py exception type for EncodeError
-            BufferWriteError::EncodeError(err) => PyValueError::new_err(err.to_string()),
+            IndexManagerError::BincodePersistenceError(err) => err.into(),
         }
     }
 }
@@ -140,7 +134,7 @@ impl LogOperation {
         match val {
             0 => Ok(Self::DELETE),
             1 => Ok(Self::ADD),
-            _ => Err(FromBytesError::OperationDecodeError),
+            _ => Err(FromBytesError::UnknownLogOperation(val)),
         }
     }
 }
@@ -212,7 +206,6 @@ struct AddLog<'a> {
 
 impl<'a> IndexLog for AddLog<'a> {
     fn from_bytes(bytes: &[u8]) -> Result<Self, FromBytesError> {
-        // todo: custom decode error
         let header = LogHeader::from_bytes(bytes[..LogHeader::ENCODED_SIZE].try_into()?)?;
         let (posting, _): (Posting, usize) = bincode::decode_from_slice(
             &bytes[LogHeader::ENCODED_SIZE..],
@@ -313,7 +306,7 @@ impl Buffer {
         }
     }
 
-    fn write<T: IndexLog>(&mut self, doc_id: u128, log: T) -> Result<(), BufferWriteError> {
+    fn write<T: IndexLog>(&mut self, doc_id: u128, log: T) -> Result<(), BincodePersistenceError> {
         let (offset, size) = log.encode_into_vec(&mut self.index)?;
 
         let meta = LogMeta {
@@ -433,7 +426,6 @@ impl<'a> Iterator for LogsReader<'a> {
             None => return None,
         };
 
-        // TODO: add proper error handling
         let bytes = &self.mmap[meta.offset as usize..(meta.offset as usize + meta.size as usize)];
         let log = match decode_log(bytes) {
             Ok(log) => log,

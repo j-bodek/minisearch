@@ -7,7 +7,7 @@ use hashbrown::{HashMap, HashSet};
 use lz4_flex::block::{
     CompressError, compress_into, decompress_size_prepended, get_maximum_output_size,
 };
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PySystemError, PyValueError};
 use pyo3::prelude::*;
 use std::fs::remove_dir_all;
 use std::io::{self, prelude::*};
@@ -21,64 +21,53 @@ use std::{
 use thiserror::Error;
 use ulid::Ulid;
 
+use crate::errors::{BincodeDecodeError, BincodeEncodeError, CompressException};
+
 static SEGMENT_THRESHOLD: u64 = 50 * 1024 * 1024;
 static DOCUMENTS_BUFFER_THRESHOLD: u64 = 1024 * 1024;
 static SAVE_SECS_THRESHOLD: u64 = 5;
 static MERGE_THRESHOLD: f64 = 0.3;
 
 #[derive(Error, Debug)]
-pub enum WriteBufferError {
-    #[error(transparent)]
+pub enum DocumentBufferError {
+    #[error("documents buffer: compress failed: {0}")]
     CompressError(#[from] CompressError),
-    #[error(transparent)]
-    EncodeError(#[from] EncodeError),
+    #[error("documents buffer: bincode encode failed: {0}")]
+    BincodeEncodeError(#[from] EncodeError),
 }
 
-impl From<WriteBufferError> for pyo3::PyErr {
-    fn from(err: WriteBufferError) -> Self {
+impl From<DocumentBufferError> for pyo3::PyErr {
+    fn from(err: DocumentBufferError) -> Self {
         match err {
-            WriteBufferError::CompressError(err) => PyValueError::new_err(err.to_string()),
-            WriteBufferError::EncodeError(err) => PyValueError::new_err(err.to_string()),
+            DocumentBufferError::CompressError(err) => CompressException::new_err(err.to_string()),
+            DocumentBufferError::BincodeEncodeError(err) => {
+                BincodeEncodeError::new_err(err.to_string())
+            }
         }
     }
 }
 
 #[derive(Error, Debug)]
-pub enum DocumentWriteError {
-    #[error(transparent)]
+pub enum DocumentsManagerError {
+    #[error("documents manager: io error: {0}")]
     Io(#[from] io::Error),
-    #[error(transparent)]
-    WriteBufferError(#[from] WriteBufferError),
-}
-
-impl From<DocumentWriteError> for pyo3::PyErr {
-    fn from(err: DocumentWriteError) -> Self {
-        match err {
-            DocumentWriteError::Io(err) => err.into(),
-            DocumentWriteError::WriteBufferError(err) => err.into(),
-        }
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum DocumentManagerError {
-    #[error(transparent)]
-    Io(#[from] io::Error),
-    #[error(transparent)]
+    #[error("documents manager: system time error: {0}")]
     Time(#[from] SystemTimeError),
-    #[error(transparent)]
-    DecodeError(#[from] DecodeError),
-    #[error(transparent)]
-    WriteBufferError(#[from] WriteBufferError),
+    #[error("documents manager: bincode decode failed: {0}")]
+    BincodeDecodeError(#[from] DecodeError),
+    #[error("documents manager: document buffer error: {0}")]
+    DocumentBufferError(#[from] DocumentBufferError),
 }
 
-impl From<DocumentManagerError> for pyo3::PyErr {
-    fn from(err: DocumentManagerError) -> Self {
+impl From<DocumentsManagerError> for pyo3::PyErr {
+    fn from(err: DocumentsManagerError) -> Self {
         match err {
-            DocumentManagerError::Io(err) => err.into(),
-            DocumentManagerError::Time(err) => PyValueError::new_err(err.to_string()),
-            DocumentManagerError::DecodeError(err) => PyValueError::new_err(err.to_string()),
-            DocumentManagerError::WriteBufferError(err) => err.into(),
+            DocumentsManagerError::Io(err) => err.into(),
+            DocumentsManagerError::Time(err) => PySystemError::new_err(err.to_string()),
+            DocumentsManagerError::BincodeDecodeError(err) => {
+                BincodeDecodeError::new_err(err.to_string())
+            }
+            DocumentsManagerError::DocumentBufferError(err) => err.into(),
         }
     }
 }
@@ -174,7 +163,7 @@ impl Buffer {
         }
     }
 
-    fn write_document(&mut self, doc: &str) -> Result<(usize, usize), WriteBufferError> {
+    fn write_document(&mut self, doc: &str) -> Result<(usize, usize), DocumentBufferError> {
         // preappend document length
         self.documents.extend((doc.len() as u32).to_le_bytes());
         let offset = self.documents.len();
@@ -188,7 +177,7 @@ impl Buffer {
         Ok((offset - 4, compressed_size + 4))
     }
 
-    fn write_meta(&mut self, doc: &Document) -> Result<(), WriteBufferError> {
+    fn write_meta(&mut self, doc: &Document) -> Result<(), DocumentBufferError> {
         let config = bincode::config::standard();
         let size = {
             let mut size_writer =
@@ -236,7 +225,7 @@ pub struct DocumentsManager {
 }
 
 impl DocumentsManager {
-    pub fn load(dir: PathBuf) -> Result<Self, DocumentManagerError> {
+    pub fn load(dir: PathBuf) -> Result<Self, DocumentsManagerError> {
         let (mut documents, mut segments_map) = (HashMap::new(), HashMap::new());
 
         let cur_segment = match Self::segments(&dir)? {
@@ -326,7 +315,7 @@ impl DocumentsManager {
         id: Ulid,
         tokens: Vec<u32>,
         content: &str,
-    ) -> Result<(), DocumentManagerError> {
+    ) -> Result<(), DocumentsManagerError> {
         // write segment to buffer
         let (data_offset, size) = self.buffer.write_document(&content)?;
         let offset = self.buffer.segment_size(&self.cur_segment)? + data_offset as u64;
@@ -350,7 +339,6 @@ impl DocumentsManager {
     }
 
     pub fn delete(&mut self, id: &Ulid) -> Result<(), io::Error> {
-        // TODO: buffer deletes, move deleted_documents to documents manager
         let doc = match self.docs.get(id) {
             Some(doc) => doc,
             None => return Ok(()),
@@ -383,7 +371,7 @@ impl DocumentsManager {
         Ok(())
     }
 
-    pub fn merge(&mut self) -> Result<(), DocumentManagerError> {
+    pub fn merge(&mut self) -> Result<(), DocumentsManagerError> {
         // Merges the segments cleaning up deleted data
 
         let mut segments = self
@@ -447,7 +435,7 @@ impl DocumentsManager {
         Ok(())
     }
 
-    fn create_segment(dir: &PathBuf) -> Result<(PathBuf, Segment), DocumentManagerError> {
+    fn create_segment(dir: &PathBuf) -> Result<(PathBuf, Segment), DocumentsManagerError> {
         let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 
         let segment = Path::new(dir).join(ts.to_string());
@@ -522,7 +510,7 @@ impl DocumentsManager {
         }
     }
 
-    fn save_buffer(&mut self, segment_size: u64) -> Result<(), DocumentManagerError> {
+    fn save_buffer(&mut self, segment_size: u64) -> Result<(), DocumentsManagerError> {
         if let Some(segment) = self.segments.get_mut(&self.cur_segment) {
             segment.size = segment_size;
         }
