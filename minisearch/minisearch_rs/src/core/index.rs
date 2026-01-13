@@ -1,4 +1,4 @@
-use crate::utils::hasher::TokenHasher;
+use crate::utils::hasher::{TokenHasher, TokenHasherError};
 use crate::utils::trie::Trie;
 
 use std::array::TryFromSliceError;
@@ -66,6 +66,8 @@ pub enum IndexManagerError {
     BufferWriteError(#[from] BufferWriteError),
     #[error(transparent)]
     LogsReaderError(#[from] LogsReaderError),
+    #[error(transparent)]
+    TokenHasherError(#[from] TokenHasherError),
 }
 
 impl From<IndexManagerError> for pyo3::PyErr {
@@ -75,6 +77,7 @@ impl From<IndexManagerError> for pyo3::PyErr {
             IndexManagerError::Time(err) => PySystemError::new_err(err.to_string()),
             IndexManagerError::BufferWriteError(err) => err.into(),
             IndexManagerError::LogsReaderError(err) => err.into(),
+            IndexManagerError::TokenHasherError(err) => err.into(),
         }
     }
 }

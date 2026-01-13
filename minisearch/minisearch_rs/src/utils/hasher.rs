@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::time::SystemTimeError;
 use std::{
     collections::hash_map::Keys,
     fs::{self, File},
@@ -7,11 +7,34 @@ use std::{
     time::SystemTime,
 };
 
+use bincode::error::EncodeError;
 use bincode::{Decode, Encode};
+use pyo3::exceptions::PyValueError;
 use std::collections::HashMap;
+use thiserror::Error;
 
 static OPERATIONS_THRESHOLD: u32 = 100_000;
 static SAVE_SECS_THRESHOLD: u64 = 5;
+
+#[derive(Error, Debug)]
+pub enum TokenHasherError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Time(#[from] SystemTimeError),
+    #[error(transparent)]
+    EncodeError(#[from] EncodeError),
+}
+
+impl From<TokenHasherError> for pyo3::PyErr {
+    fn from(err: TokenHasherError) -> Self {
+        match err {
+            TokenHasherError::Io(err) => err.into(),
+            TokenHasherError::Time(err) => PyValueError::new_err(err.to_string()),
+            TokenHasherError::EncodeError(err) => PyValueError::new_err(err.to_string()),
+        }
+    }
+}
 
 #[derive(Decode, Encode, PartialEq, Debug, Clone)]
 struct TokensStore {
@@ -59,7 +82,7 @@ pub struct TokenHasher {
 }
 
 impl TokenHasher {
-    pub fn load(dir: &PathBuf) -> Result<Self, Box<dyn Error>> {
+    pub fn load(dir: &PathBuf) -> Result<Self, TokenHasherError> {
         let index_dir = dir.join("index");
         let tokens = index_dir.join("tokens");
         if !fs::exists(&index_dir)? || !fs::exists(&tokens)? {
@@ -81,7 +104,7 @@ impl TokenHasher {
         self.tokens_store.map.keys()
     }
 
-    pub fn add(&mut self, token: String) -> Result<u32, io::Error> {
+    pub fn add(&mut self, token: String) -> Result<u32, TokenHasherError> {
         if let Some(idx) = self.tokens_store.map.get(&token) {
             return Ok(*idx);
         }
@@ -100,7 +123,7 @@ impl TokenHasher {
         return Ok(idx);
     }
 
-    pub fn delete(&mut self, token: u32) -> Result<Option<String>, io::Error> {
+    pub fn delete(&mut self, token: u32) -> Result<Option<String>, TokenHasherError> {
         if let Some(token_str) = self.tokens_store.tokens.get_mut(token as usize)
             && let Some(token_str) = token_str.take()
         {
@@ -128,10 +151,9 @@ impl TokenHasher {
         }
     }
 
-    fn save(&mut self) -> Result<(), io::Error> {
+    fn save(&mut self) -> Result<(), TokenHasherError> {
         let cur_ts = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs();
 
         if self.operations >= OPERATIONS_THRESHOLD || cur_ts >= self.last_save + SAVE_SECS_THRESHOLD
@@ -144,11 +166,9 @@ impl TokenHasher {
         Ok(())
     }
 
-    pub fn flush(&self) -> Result<(), io::Error> {
+    pub fn flush(&self) -> Result<(), TokenHasherError> {
         let mut file = File::create(&self.path)?;
-        // replace with custom error
-        bincode::encode_into_std_write(&self.tokens_store, &mut file, bincode::config::standard())
-            .unwrap();
+        bincode::encode_into_std_write(&self.tokens_store, &mut file, bincode::config::standard())?;
         Ok(())
     }
 }

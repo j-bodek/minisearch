@@ -10,7 +10,7 @@ use crate::utils::trie::Trie;
 use bincode::error::{DecodeError, EncodeError};
 use bincode::{Decode, Encode};
 use hashbrown::HashSet;
-use pyo3::exceptions::{PyKeyError, PyOSError, PySystemError, PyValueError};
+use pyo3::exceptions::{PyKeyError, PySystemError, PyValueError};
 use pyo3::prelude::*;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
