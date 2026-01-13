@@ -502,7 +502,7 @@ impl LogsManager {
 
             match log {
                 IndexLogImpl::Add(log) => {
-                    if !deleted.contains(&meta.id) {
+                    if !deleted.contains(&meta.id) && !postings.is_empty() {
                         postings[*idx] = log.posting.into_owned();
                         *idx -= 1;
                     }

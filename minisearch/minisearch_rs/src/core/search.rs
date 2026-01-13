@@ -72,8 +72,11 @@ impl SearchMeta {
         }
 
         let mut file = File::open(&path)?;
-        let data: SearchMetaData =
-            bincode::decode_from_std_read(&mut file, bincode::config::standard())?;
+        let data: SearchMetaData = if file.metadata()?.len() > 0 {
+            bincode::decode_from_std_read(&mut file, bincode::config::standard())?
+        } else {
+            SearchMetaData { avg_doc_len: 0.0 }
+        };
 
         Ok(Self {
             path: path,
@@ -254,7 +257,7 @@ impl Search {
         self.force_delete()
     }
 
-    fn search(&mut self, mut query: String, top_k: u8) -> PyResult<Vec<(f64, Document)>> {
+    fn search(&mut self, mut query: String, top_k: u32) -> PyResult<Vec<(f64, Document)>> {
         let query = Query::parse(&mut query)?;
 
         let slop = query.slop;

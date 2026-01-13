@@ -63,6 +63,7 @@ impl<'a> Query<'a> {
 
         let number = text::digits(10)
             .at_least(1)
+            .at_most(2)
             .to_slice()
             .map(|s| u8::from_str(s).unwrap());
 
