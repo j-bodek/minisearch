@@ -11,7 +11,7 @@ use pyo3::prelude::*;
 
 /// A Python module implemented in Rust.
 #[pymodule]
-fn minisearch_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Search>()?;
     Ok(())
 }
