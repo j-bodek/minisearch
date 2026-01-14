@@ -1,6 +1,5 @@
 /env
+/data
 /whoosh_indexdir
+/scripts
 __pycache__
-notes.txt
-test.py
-words.txt

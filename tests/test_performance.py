@@ -56,7 +56,7 @@ def test_performance(data, queries):
             times.append(
                 timeit.timeit(
                     lambda: search.index("wikipedia").search(
-                        rust_query(q, fuzzy, slop), top_k=0
+                        rust_query(q, fuzzy, slop), top_k=5
                     ),
                     number=1,
                 )
