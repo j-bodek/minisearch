@@ -92,7 +92,7 @@ impl TokenHasher {
             idx
         } else {
             self.tokens_store.tokens.push(Some(token.clone()));
-            self.tokens_store.tokens.len() as u32
+            (self.tokens_store.tokens.len() - 1) as u32
         };
 
         self.tokens_store.map.insert(token, idx);
