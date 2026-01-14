@@ -204,7 +204,10 @@ impl Search {
 
         let mut tokens = Vec::with_capacity(tokens_num as usize);
         for (token, positions) in tokens_map {
-            self.fuzzy_trie.add(&token);
+            if !self.hasher.contains(&token) {
+                self.fuzzy_trie.add(&token);
+            }
+
             let token = self.hasher.add(token)?;
             let posting = Posting {
                 doc_id: doc_id.0,

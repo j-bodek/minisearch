@@ -115,7 +115,7 @@ impl TokenHasher {
         Ok(None)
     }
 
-    pub fn hash(&self, token: &String) -> Option<u32> {
+    pub fn hash(&self, token: &str) -> Option<u32> {
         match self.tokens_store.map.get(token) {
             Some(idx) => Some(*idx),
             None => None,
@@ -127,6 +127,16 @@ impl TokenHasher {
             Some(val) => val.as_ref(),
             None => None,
         }
+    }
+
+    pub fn flush(&self) -> Result<(), BincodePersistenceError> {
+        let mut file = File::create(&self.path)?;
+        bincode::encode_into_std_write(&self.tokens_store, &mut file, bincode::config::standard())?;
+        Ok(())
+    }
+
+    pub fn contains(&self, token: &str) -> bool {
+        return self.tokens_store.map.contains_key(token);
     }
 
     fn save(&mut self) -> Result<(), BincodePersistenceError> {
@@ -141,12 +151,6 @@ impl TokenHasher {
             self.flush()?;
         }
 
-        Ok(())
-    }
-
-    pub fn flush(&self) -> Result<(), BincodePersistenceError> {
-        let mut file = File::create(&self.path)?;
-        bincode::encode_into_std_write(&self.tokens_store, &mut file, bincode::config::standard())?;
         Ok(())
     }
 }
