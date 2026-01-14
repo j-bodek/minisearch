@@ -165,11 +165,8 @@ impl<'a> PostingListIntersection<'a> {
 
         return Self::next_docs(index, pointer);
     }
-}
 
-impl<'a> Iterator for PostingListIntersection<'a> {
-    type Item = Vec<Vec<TokenDocPointer>>;
-    fn next(&mut self) -> Option<Vec<Vec<TokenDocPointer>>> {
+    pub fn next(&mut self) -> Option<&Vec<Vec<TokenDocPointer>>> {
         let mut same = true;
 
         for i in 0..self.query.tokens.len() {
@@ -197,7 +194,7 @@ impl<'a> Iterator for PostingListIntersection<'a> {
 
         loop {
             if same {
-                return Some(self.docs.clone());
+                return Some(&self.docs);
             } else {
                 same = true;
                 let cur_target_doc = target_doc.clone();

@@ -154,7 +154,7 @@ impl<'a> TokenGroupIterator<'a> {
 impl<'a> MinimalIntervalSemanticMatch<'a> {
     pub fn new(
         index: &'a HashMap<u32, Vec<Posting>, BuildNoHashHasher<u32>>,
-        pointers: Vec<Vec<TokenDocPointer>>,
+        pointers: &Vec<Vec<TokenDocPointer>>,
         min_slop: i32,
     ) -> Self {
         let mut iterators: Vec<TokenGroupIterator> = Vec::with_capacity(pointers.len());
@@ -195,7 +195,6 @@ impl<'a> MinimalIntervalSemanticMatch<'a> {
     }
 }
 
-// TODO
 impl<'a> Iterator for MinimalIntervalSemanticMatch<'a> {
     type Item = MisResult;
 

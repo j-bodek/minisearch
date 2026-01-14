@@ -263,7 +263,7 @@ impl Search {
         let slop = query.slop;
         let query = self.tokenizer.tokenize_query(query);
 
-        let intersection = match PostingListIntersection::new(
+        let mut intersection = match PostingListIntersection::new(
             query,
             &self.index_manager.index,
             &self.hasher,
@@ -276,7 +276,7 @@ impl Search {
         let mut results: BinaryHeap<Reverse<SearchResult>> =
             BinaryHeap::with_capacity(top_k as usize);
 
-        for pointers in intersection {
+        while let Some(pointers) = intersection.next() {
             let (doc_id, mut score) = (pointers[0][0].doc_id, 0.0);
             if self.deleted_documents.contains(&doc_id) {
                 continue;
@@ -285,7 +285,7 @@ impl Search {
             let max_score = max_bm25(
                 &self.documents_manager,
                 self.meta.data.avg_doc_len,
-                &pointers,
+                pointers,
             );
 
             if top_k != 0

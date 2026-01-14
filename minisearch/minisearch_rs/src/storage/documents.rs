@@ -239,6 +239,8 @@ impl DocumentsManager {
                     .0
                     .clone();
 
+                // TODO: in future can validate segment files before loading them
+                // to check if they are not malicious or corrupted
                 for (path, segment) in segments {
                     let mut del = File::open(path.join("del"))?;
                     let del_size = del.metadata()?.len();
@@ -461,7 +463,7 @@ impl DocumentsManager {
                 let mut segments = vec![];
                 for e in fs::read_dir(&dir)? {
                     let path = e?.path();
-                    if !path.is_dir() {
+                    if !path.is_dir() || path.is_symlink() {
                         continue;
                     }
 
