@@ -120,6 +120,12 @@ impl SearchMeta {
     }
 }
 
+#[pyclass(name = "Result", get_all)]
+pub struct PySearchResult {
+    pub score: f64,
+    pub document: Document,
+}
+
 pub struct SearchResult {
     pub doc_id: Ulid,
     pub score: f64,
@@ -260,7 +266,7 @@ impl Search {
         self.force_delete()
     }
 
-    fn search(&mut self, mut query: String, top_k: u32) -> PyResult<Vec<(f64, Document)>> {
+    fn search(&mut self, mut query: String, top_k: u32) -> PyResult<Vec<PySearchResult>> {
         let query = Query::parse(&mut query)?;
 
         let slop = query.slop;
@@ -341,7 +347,10 @@ impl Search {
             .into_iter()
             .filter_map(|r| {
                 if let Some(doc) = self.documents_manager.docs.get(&r.0.doc_id) {
-                    Some((r.0.score, doc.clone()))
+                    Some(PySearchResult {
+                        document: doc.clone(),
+                        score: r.0.score,
+                    })
                 } else {
                     None
                 }

@@ -152,8 +152,6 @@ struct Buffer {
     meta: Vec<u8>,
 }
 
-// TODO implement custom encode, decode errors (optionaly propagate systemtime error?)
-
 impl Buffer {
     fn new() -> Self {
         Self {
@@ -233,7 +231,6 @@ impl DocumentsManager {
                 let mut deletes = HashSet::new();
                 let cur_segment = segments
                     .iter()
-                    //todo:  first convert names into u64 to perform numeric cmp
                     .max_by(|(_, x), (_, y)| x.name.cmp(&y.name))
                     .unwrap()
                     .0

@@ -1,9 +1,7 @@
 import time
 import json
 import pytest
-
-# from minisearch import MiniSearch
-from minisearch import MiniSearchRs as MiniSearch
+from minisearch import MiniSearch
 
 
 @pytest.fixture
@@ -40,13 +38,14 @@ def test_performance(data, queries, results):
 
     search = MiniSearch()
     s = time.time()
-    search.add("wikipedia", "data")
+    _, index = search.add("wikipedia", "data")
     print(f"Loading took: {time.time() - s}")
 
     s = time.time()
-    for d in data:
-        search.index("wikipedia").add(d)
-    search.index("wikipedia").flush()
+    with index.session() as index:
+        for d in data:
+            index.add(d)
+
     print(f"Inserting took: {time.time() - s}")
 
     def test_results(_results, slop, fuzzy, top_k):
@@ -55,10 +54,8 @@ def test_performance(data, queries, results):
 
         for q in queries:
             query_results = []
-            for score, doc in search.index("wikipedia").search(
-                rust_query(q, fuzzy, slop), top_k=top_k
-            ):
-                r = doc.content[:100]
+            for res in index.search(rust_query(q, fuzzy, slop), top_k=top_k):
+                r = res.document.content[:100]
                 assert r in results.get(
                     q, []
                 ), f"Slop: {slop}, fuzzy: {fuzzy}, top-k: {top_k} Result: {r} was returned for query: {q} but isn't present in defined results"

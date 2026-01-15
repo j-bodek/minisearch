@@ -6,12 +6,30 @@ pub mod query;
 pub mod storage;
 pub mod utils;
 
-use crate::core::search::Search;
 use pyo3::prelude::*;
 
-/// A Python module implemented in Rust.
 #[pymodule]
-fn rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<Search>()?;
-    Ok(())
+mod rust {
+    #[pymodule_export]
+    use crate::core::search::PySearchResult;
+    #[pymodule_export]
+    use crate::core::search::Search;
+    #[pymodule_export]
+    use crate::storage::documents::Document;
+
+    // errors
+    #[pymodule_export]
+    use crate::errors::BincodeDecodeError;
+    #[pymodule_export]
+    use crate::errors::BincodeEncodeError;
+    #[pymodule_export]
+    use crate::errors::CompressException;
+    #[pymodule_export]
+    use crate::errors::TryFromSliceException;
+    #[pymodule_export]
+    use crate::errors::UlidDecodeError;
+    #[pymodule_export]
+    use crate::errors::UlidMonotonicError;
+    #[pymodule_export]
+    use crate::errors::UnknownLogOperation;
 }
