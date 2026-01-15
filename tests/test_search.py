@@ -42,7 +42,7 @@ def test_performance(data, queries, results):
     print(f"Loading took: {time.time() - s}")
 
     s = time.time()
-    with index.session() as index:
+    with index.session():
         for d in data:
             index.add(d)
 

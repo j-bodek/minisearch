@@ -456,7 +456,7 @@ impl LogsManager {
         })
     }
 
-    fn write<T: IndexLog>(&mut self, doc_id: u128, log: T) -> Result<(), IndexManagerError> {
+    fn write<T: IndexLog>(&mut self, doc_id: u128, log: T) -> Result<(), BincodePersistenceError> {
         self.buffer.write(doc_id, log)?;
         let cur_ts = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)?
@@ -563,7 +563,7 @@ impl IndexManager {
         })
     }
 
-    pub fn insert(&mut self, token: u32, posting: Posting) -> Result<(), IndexManagerError> {
+    pub fn insert(&mut self, token: u32, posting: Posting) -> Result<(), BincodePersistenceError> {
         let postings = self.index.entry(token).or_default();
         let log = AddLog::new(token, postings.len() as u32 + 1, &posting);
         self.logs_manager.write(posting.doc_id, log)?;
@@ -578,7 +578,7 @@ impl IndexManager {
         document_ids: &HashSet<Ulid>,
         fuzzy_trie: &mut Trie,
         hasher: &mut TokenHasher,
-    ) -> Result<(), IndexManagerError> {
+    ) -> Result<(), BincodePersistenceError> {
         for token in tokens {
             let postings = match self.index.get_mut(token) {
                 Some(postings) => postings,

@@ -34,9 +34,9 @@ def test_performance(data, queries):
 
     def insert_articles(data, index):
         def _wrapper():
-            with index.session() as _index:
+            with index.session():
                 for d in data:
-                    _index.add(d)
+                    index.add(d)
 
         return _wrapper
 

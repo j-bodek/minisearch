@@ -10,7 +10,7 @@ use crate::utils::hasher::TokenHasher;
 use crate::utils::trie::Trie;
 use bincode::{Decode, Encode};
 use hashbrown::HashSet;
-use pyo3::exceptions::{PyKeyError, PyValueError};
+use pyo3::exceptions::PyKeyError;
 use pyo3::prelude::*;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -172,15 +172,7 @@ impl Search {
             fuzzy_trie.init_automaton(i);
         }
 
-        let hasher = match TokenHasher::load(&dir) {
-            Ok(hasher) => hasher,
-            Err(e) => {
-                return Err(PyValueError::new_err(format!(
-                    "Failed to load TokenHasher {}",
-                    e.to_string()
-                )));
-            }
-        };
+        let hasher = TokenHasher::load(&dir)?;
         for token in hasher.tokens() {
             fuzzy_trie.add(token);
         }
