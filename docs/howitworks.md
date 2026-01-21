@@ -1,37 +1,73 @@
 ## Theory of operation
 
-This document briefly desscribes how minisearch works under the hood. It serves the purpose of better understanding machinsm and also like a learning material for getting the picture how search engines works.
+This document briefly describes how minisearch works under the hood. It serves the purpose of better understanding Minisearch machanism and also serves as a learning material for getting the picture of how search engines works.
 
 
 ### Inverted index - the main datastructure behind search engine
 
-The main datastructure behind minisearch is inverted index. This amazing datastructure enables to efficiently find all documents containing the given token by mapping the token to their postings list. Posting list is nothing more then collection of all documents containing the token to which the posting list is mapped to with positions of token apperance in those documents. Such structure allows for efficient retrival of documents that match the query tokens and then finding the documents that match that query.
+The main datastructure behind Minisearch is inverted index. It enables to efficiently find all documents containing the given term by mapping the terms to their postings list. Posting list is nothing more then collection of all documents containing the term to which the posting list is mapped and also positions of term apperances in those documents. The visual representation of it looks like that
+
+![inverted index](assets/inverted_index.png "inverted index")
+
+Such structure allows for efficient retrival of documents that match the given query.
 
 
 ### Unicode text segmantation and Snowball stemmer - turning documents into tokens
 
-Unicode text segmentation is used for retriving the words from the documents. It allows to brake the documents into smaller units. After unicode segmentation each extracted word is injected into snowball stemmer. Snowball stemmer is stemming algorithm which purpose is to get the stem form of the word. The stemming is important because get the stem for of the word for example reading -> read, reads -> read etc. By doing so queries are more efficient, inverted index contains less keys and the search works better because it don't care about term form it only cares if it appears or not. Such transformed terms are then called tokens, for each document all tokens are extracted, stop words (such as 'a', 'and' etc.) are removed because they are not meaningfull from search perspective and positions of those tokens are grouped by token and stored in inverted index.
+When new document is added to Minisearch it is first analyzed and inserted into inverted index. Main process of document analysis is tokenization which is splitting the document into single unit of informations.
+
+First all unicode words are extracted from document, for this the [unicode text segmentation](https://www.unicode.org/reports/tr29/ "unicode text segmentation") is used. After word extraction there is a step of skipping stop words, these are common, high frequency words that contribute little to the meaning of the sentence for example: "a", "an", "on" etc. After that each word is processed using [Snowball stemming algorithm](https://snowballstem.org/algorithms/english/stemmer.html "Snowball stemming algorithm"). Stemming is the process of unifying words to their single form called stem, for example Snowball Stemmer will map "connecting", "connection", "connective" and "connected" to unified form "connect". By doing so search can find all possible matches containing the word regarding it's form. This also results in smaller inverted index and overall better search performance. Such transformed words are then called tokens, for each document they are extracted with positions they appear in the document and inserted into inverted index.
 
 
 ### Query parsing - parsing query with custom parser
 
-Query parser is defined with chumsky - high-performance parsing library. The syntax definition is really straight forward. Each non-valid queries result in meaningfull error displayed to the end user.
+Minisearch query language is failry simple and can be handled by simple logic written with regexps and basic string manipulations. However such approach have few problems:
+- error handling - it wouldn't be trivial to return descriptive error messages highlighting exact problem and place in query where it occured
+- future developement - if query language grammar will evolve over time maintaining such logic will quickly result in spaghetti parser that is unmaintanable
+
+For those reasons i decided to write small and easy parser with [chumsky](https://crates.io/crates/chumsky "chumsky") library, it offers error handling and simplicity with defining new grammar rules with great performance.
 
 
 ### Levenshtein automaton - fast retrieval of similar tokens
 
-Fuzzy search is the type of search that supports detecting the documents with taking into consideration typo in query or document itself. It can be achieved by comparing the tokens similarity to check if they are similar enough. The similarity is meassured by text similarity algorithms, Minisearch uses well known similarity algorithm called Levenshtein Distance. It meassures minimal number of operations (where operation
-is deletion of character, addition of character or replacement of character) that are needed to transform one string into another. It works great but with brute force approach - iterating over tokens from inverted index and comparing them with token from query - isn't perfect and can take significant amount of time especially
-with larger inverted-indexes. For searching all similar strings within distance of N from the set of strings there is way more optimal approach, for that we can use Levenshtain DFA (deterministic finite automaton). The dfa is state machine that:
-- is finite - has it's final accept/reject state
-- deterministic - each state has transition to at most one other state
+Approximate string matching (aka. fuzzy search) is the type of search that instead of searching document by exact terms given in a query can instead search for terms within specified similarity to the ones given in a query. For example in Minisearch following query will search all documents that contain word 'elephant' within similarity of 2.
 
-It is defined for the string for which we want to check if other string(s) is similar and then to check similarity we feed it with symbols from other string one by one. Automaton returns the next state for each given symbol. This is extremally powerfull for searching all similar strings within set because the set of the words can be transformed into Trie and then the trie can be traversed and each symbol during traversal inserted into Levenshtain DFA, if the distance is greater then the given one then we don't traverse deeper get back to previous node and continue traversing other nodes. By doing that we are skipping huge parts of the trie and just check subset of actual words from the set which result in much better computation time.
+```"elephant~2"```
+
+Minisearch measures terms similarity by using Levenshtein Distance. It finds minimal number of operations needed to transform one string into another where operation can be either insertion of the new character, deletion of the character or replacement of the character. For example Levenshtein Distance between "cat" and "call" is 2 because it needs at least two operations to transform either "cat" into "call" or "call" into "cat".
+
+```
+- 1 - replace "t" in "cat" with "l" -> "cal"
+- 2 - insert "l" in the end of the "cal" -> "call"
+```
+
+The fuzzy search uses Levenshtein Distance to find all tokens stored in the inverted index that are within similarity N to the searching token. Brute force approach of doing that will be iterating through all of the tokens stored in inverted index and computing Levenshtein Distance between them and search token which is highly inefficient especially with larger index. Luckily there is a lot better way of doing that.
+
+There is a great [paper](assets/2002_Schulz.pdf "paper") describes Levenshtein DFA (Deterministic Finite Automaton). To understand how this model works first it is important to understand what DFA is, it is state machine that is:
+- finite - meaning it has finite number of states
+- deterministic - which means that each transition can return exactly one next state
+
+Idea behind levenshtein automaton is to construct generic DFA structure for fixed N that can then be reused to compute Levenshtein Distance of degree N for given string, only the transitions depend on the actual string. It then accepts single character and return new state that is either:
+- intermediate - Levenshtein Distance of string constructed from given characters isn't within N but it still can be within Levenshtein Distance of N after receiving new characters
+- final:
+    - accepting - Levenshtein Distance of string constructed from given characters is <= N
+    - dead/rejecting - Levenshtein Distance > N and there is no possibility that inserting new characters will change that
+
+Authors of the paper observed that for automaton of fixed degree N the next state can be computed by analyzing fixed window of string next characters. That observation lead to construction of characteristic vectors that defines where the input character appears in the window, they are then used to make fast decisions about next step transition.
+
+Finding all terms that are within Levenshtein Distance of degree N to the search term with usage of Levenshtein Automaton can be done by using [Trie](https://en.wikipedia.org/wiki/Trie "Trie"). First Trie with all tokens that are stored in inverted index is constructed. Next Trie is traversed and with each step the new character is given to Levenshtein Automaton, automaton then returns state that if:
+- intermediate - continue traversal
+- final 
+    - if acceptance - check if accepted Trie node is a word, if so return it as similar
+    - if dead state - stop traversal and get back to previous node
+
+Such technique results in way faster retrival of similar tokens then brute force approach, it checks prefixes of the tokens once and also skip huge portions of Trie by quickly detecting dead states.
+
 
 
 ### Bm25 - scoring the final results
 
-For calculating the score for the documents included in results the bm25 function is used. Final document score is calculated by evaluating the score for each query token and then summing them together. Token score takes into account things like TF (time frequecy) - number a token appeared in document and IDF (inverse document frequency) - measurement that tells how rare token is amongs all of the documents.
+For calculating the score of the documents included in results the [bm25](https://pl.wikipedia.org/wiki/Okapi_BM25 "bm25") function is used. Final document score is calculated by evaluating the score for each query token and then summing them together. Token score takes into account things like TF (time frequecy) - number a token appeared in document and IDF (inverse document frequency) - measurement that tells how rare token is amongs all of the documents.
 
 
 
