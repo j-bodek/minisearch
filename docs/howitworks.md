@@ -73,15 +73,59 @@ For calculating the score of the documents included in results the [bm25](https:
 
 ### Posting list intersection - retrieving documents containing query tokens
 
-This is the process of retriving all documents that contains tokens from the term - right now without checking any particular order. First for each token from query we get all tokens that are within the given similarity (distance=0 for same token, distance=1, 2 etc.), that's done with levenshtein automaton and tokens trie. After similar tokens are retrieved the pointer heap is constructed, it points to first document in the inverted index for the given token. Such pointer heap is constructed for all similar token groups in query. After that the actual posting list intersection starts, first the initial documents are retrieved from each pointer heap. If all documents returned from the heaps are the same then the document contains all the tokens we want otherwise max token is choosen and for each pointer heap the pointer is moved to document greater or equal to the max document. After moving pointer the document to which the pointer points is returned and the evaluation is repeated. This process last untill any of the heaps is empty.
+[Posting list intersection](https://nlp.stanford.edu/IR-book/html/htmledition/processing-boolean-queries-1.html#sec:postingsintersection "Posting list intersection") is process of quickly identifying all documents that contain all query token. In minisearch this process has to support two types of intersections:
+- exact - document contains exact token from query
+- approximate - if query defines token minimal similarity of N, document may contain token whose Levenshtein Distance is within specified degree N to query token
 
+To achieve that query tokens are first analyzed, if token specifies similarity threshold then Levenshtein Automaton is used to find indexed tokens within given similarity. If token similarity isn't specified then only one exact token is used. The resulting tokens are then grouped per query term.
+
+Document matches the query if it contains at least one token from each group (OR within a group, AND across groups). It is done by creating postings iterator that merges posting lists for each group. Each group iterator maintains a min-heap containing the current document pointer for each token’s postings list, ordered by document id. This allows the iterator to return document ids containing any token from the group in ascending order.
+
+The intersection process works by comparing the current document ids returned by each group iterator. If all document ids are the same then the intersection is found. Otherwise the maximum document id among the current one is selected and the pointers for all group iterators are advanced to the first document with id equal or greater to the current maximum. This process is repeated until any group iterator is exhausted.
 
 
 ### Minimal-interval semantics - checking if document match a query
 
-https://vigna.di.unimi.it/ftp/papers/EfficientLazy.pdf
+Minimal-interval semantics is the process of determining if document contains query tokens in required order and sloppiness. Sloppiness is essentialy the number of extra tokens that can appear in the tokens interval. For example query:
 
-This is a process of actually checking the order of the query tokens in the actual query, right there the query sloppines are evaluated. First the tokens iterator window is constructed, in the posting list intersection for each token there are at least one token within the given similarity found in the document and passed to the minimal-interval semantics. Let's call those similar tokens a token group. Minimal-interval semantics takes vector of tokens groups, for each tokens group the TokenGroupIterator is constructed, it works as the wrapper around all the tokens from the group returning next min position of the given tokens for specific document. It is constructed based on the n-size min-heap where n is the number of the tokens in token group. Such TokensGroupIterator is constructed for each tokens group and stored in the vector representing all the query tokens. After that the minimal-interval semantics calculation is done, for each token group starting from index=1 up to N where N is the number of token groups the closest position that is >= to the position of the previous token is found, slop is evaluated and updated and if it is within the given slop then the process is repeated for the next index. Otherwise the next position for tokens group at index i=0 is found and index is reset to i=1 and all previous process is repeat. If the index i goes up to index=N and the calculated slop is within given sloppiness then interval that meets the requirements is found and returned. All process is run untill any of the token iterators is empty.
+```"oh hello world"~2```
+
+Specifies sloppiness of 2 meaning that the document can contain 2 extra tokens in between the query tokens. So documents containing all of the following parts will match the above query:
+- "oh hello world" - exact query match with sloppiness = 0
+- "oh hello my world" - contains "my" between query tokens meaning sloppiness = 1
+- "oh my hello hi world" - contains "my" and "hi" between query tokens meaning sloppiness = 2
+
+The actual matching process uses the [Greedy Block](assets/EfficientLazy.pdf "Greedy Block") algorithm. From the previous posting list intersection step, for each query token we obtain a token group containing all exact or approximate tokens that appear in the document, together with their positions. The input of the algorithm therefore has the following structure:
+
+[[{"token": "token1-sim", "positions": [1, 5, 7]}, {"token": "token1-sim2", "positions": [2, 3, 9]}], [{"token": "token2-sim", "positions": [4, 8]}], ...]
+
+For each of this group the token group iterator is constructed. This iterator helps merges the positions for all tokens in the group and return them in ascending order. It is constructed from tokens position iterators, then min-heap is created and for each token positions iterator the first position with it's corresponding token is inserted into the heap. On each step, the smallest position is popped from the heap, and the next position from the corresponding token iterator is inserted. 
+
+Let's take a look at an example, for following tokens group
+
+group = [{"token": "x", "positions": [1, 4, 8]}, {"token":"y", "positions": [2, 3, 7]}, {"token":"z", "positions": [5, 6]}]
+
+
+This process will look as follow
+
+                               Create heap and insert first position         After calling next pop the first element from
+                               from each iterator                            the heap and insert next position from
+                                                                             corresponding token iterator
+
+x_iterator = [1, 4, 8]         x_iterator = [4, 8]                           x_iterator = [8] <- inserted first element (4)
+y_iterator = [2, 3, 7]         y_iterator = [3, 7]                           y_iterator = [3, 7]
+z_iterator = [5, 6]            z_iterator = [6]                              z_iterator = [6]
+                               heap = [(1,x), (2,y), (5,z)]                  heap = [(2,y), (4,x), (5,z)] <- popped first element (1)
+
+
+
+The minimal-interval algorithm maintains a vector of current positions, one per query token, and attempts to build an ordered sequence of positions using corresponding tokens group iterators. It starts by selecting a smallest position for the first query token, then for each subsequent token selects the smallest position that is greater than the previous one.
+
+The slop of the current interval is computed as:
+
+slop = prev_slop + (end_position - start_position) - 1
+
+If the slop is less than or equal to the allowed sloppiness, the algorithm advances to the next query token. If the slop exceeds the allowed value, the position of the first query token is advanced to its next available position and the process restarts. If positions are successfully selected for all query tokens, a matching minimal interval is found and returned. The algorithm continues searching until any token group iterator is exhausted, at which point no further matching intervals are possible.
 
 
 ### Maxscore - skipping minimal-interval semantics for non-competative documents
