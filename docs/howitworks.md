@@ -135,40 +135,40 @@ Calculating minimal-interval semantics is complicated process that needs extra m
 
 ### Persistence lifecycle - buffers, compression and AOF logs
 
-Persistence of the Minisearch can be divided into two main categories:
+Persistence in the Minisearch can be divided into two main categories:
 - documents persistance
 - index persistance
 
-Let's start with documents persistance, after adding new document to Minisearch it is split into tokens which are inserted into the inverted index. But the actual document isn't stored in the memory, documents are stored in segments - they are binary files stored on a disk. There are multiple segments and each one of them store data up to specified threshold (by default 50MB), that's because of performance reasons like faster seeks on smaller files, better handling that my os etc. Each segment is made out of three binary files:
-- data - storing the documents
-- meta - storing metadata about the documents
-- del - storing deleted documents because data is AOF fle
+Let's start with documents persistance, after adding new document to Minisearch it is tokenized and then inserted into the in memory inverted index. But the actual document content isn't stored in the memory, documents are stored in segments which are binary files stored on a disk. There can be multiple segments and each one of them stores data up to specified threshold (by default 50MB). Segmenting documents in this way limits merge costs and improves cache locality. Each segment is made out of three binary files:
+- data - stores the documents content
+- meta - stores documents metadata
+- del - stores deleted document ids and size of the document content
 
-When writing new document, first it is compressed with lz4 compression algorithm, decision to use it was made because it is extremaly fast and still offers acceptably good compresion. Compressed document is then saved to memory buffer. After that the metadata for the document is created, it stores document id, document tokens, location - segment, offset and size of compressed document. This metadata is encoded into bytes and stored with the u64 prefix annotating it's size in metadata buffer. The document metadata object is also stored in the memory allowing fast document retrival if needed. Then if documents buffer exceeds the given threshold (by default 1MB) or last save was older then the given threshold (by default 5 seconds) then data from buffer is saved into disk.
+When saving new document, first it is compressed with lz4 compression algorithm, decision to use it was made because it is extremaly fast and still offers acceptably good compresion. Compressed document is then saved to memory buffer. After that the metadata for the document is created, it stores document id, document tokens, location - segment, offset within the segment file and size of compressed document. This metadata is encoded into binary format and stored with the u64 size prefix in metadata buffer. The document metadata object is also stored in the memory allowing fast document retrival if needed. Then if documents buffer exceeds the given threshold (by default 1MB) or last save was older then the given threshold (by default 5 seconds) then data from buffer is saved into disk.
 
-Deletion of the document is fairly simple, when document is deleted it's id and size is written into del file.
+Deletion of the document is fairly simple, when document is deleted it's id and size are written into del file.
 
-Because data, meta and del files are AOF files no modification of already inserted data are made. Because of that after deleting significant number of documents large number of data stored on disk isn't actually used and can be safely deleted. That's why merge mechanism was introduced. It iterates over all segments and check if ratio of deleted/undeleted documents is greater or equal to a given threshold (by default 30%), if so data is read into memory buffers skipping all of the deleted documents and sequentially written into new segment. After this process is finished old segment is deleted and replaced by new one.
+Because data, meta and del files are AOF files no modification of already inserted data are made. Because of that after deleting significant number of documents large number of data stored on disk isn't actually used and can be safely deleted. That's why merge mechanism was introduced. During the merge, segments whose deleted documents percentage is greater or equal to a given threshold (by default 30%) are rewritten. Their data is read into memory buffers skipping all of the deleted documents and sequentially written into new segment. After this process is finished and all merged data is saved on disk in new segment the old segment is deleted.
 
-Restoring documents metadata - when initializing Minisearch with existing data, on startup it restores the documents metadata in memory. It iterates over segments and read their metadata by first checking 8 bytes that stores the size of the document metadata object then reading the metadata object to memory and reapeating that process untill it reaches the end of the file.
+On startup, Minisearch restores documents metadata to memory by iteratating over segments and reading their metadata. Each metadata record is read by first consuming 8 byte size prefix and then reading those number of bytes and deserializing them back into metadata object. This process is repeated untill it the end of the metadata file is reached.
 
 
 
-Index persistance - index persistance is done by storing the logs describing operations made on the inverted index in the AOF files and then reconstructing them. Index is stored in three binary files:
-- index - logs add/delete on inverted index
-- meta - logs metadata
-- tokens - maps that map tokens to u32 and u32 back to string
+Inverted index is persisted by using the append only logs that record all updates made on the inverted index and then reconstructing it on startup. Index persistance is implemented using three binary files:
+- index - append only logs describing add and delete operations on inverted index
+- meta - fixed size metadata associated with each log entry
+- tokens - mappings between token strings and their u32 identifiers
 
-Updating inverted index - when updating inverted index all insert/delete operations are written as logs into buffer. They are encoded into binary format and saved into memory, after buffer size exceeds threshold (by default 1MB) or last save was older then the threshold (by default 5 seconds) then logs are appended to index file. For each log the associated log meta is created, it is of fixed size and the binary serialization looks like this:
+When inverted index is updated all add and delete operations are encoded into binary format and saved into memory buffer. After buffer size exceeds threshold (by default 1MB) or last save was older then the threshold (by default 5 seconds) then logs are written to index file. For each log the associated fixed size log metadata is created, binary serialized as:
 
 doc_id:16 bytes|offset:8 bytes|size:4 bytes
 
 Each log however has different size and stores following informations:
 
-- operation - either ADD or DELETE
-- token - u32 representing the inverted index token that was modified
-- postings_num - number of postings associated with token after the operation
-- posting - only for ADD log - posting that was added to inverted index
+- operation type (ADD or DELETE)
+- u32 token identified
+- number of postings associated with token after the operation
+- posting that was added to inverted index (for ADD operations only)
 
 
-Storing this informations and metadata of fixed size allows to reconstruct the index starting from the latest operation which allows to allocate the proper amount of memory with advance and skip insertion of documents that are deleted afterward.
+Storing this informations and metadata of fixed size allows to reconstruct the index starting from the latest operation which allows to allocate the proper amount of memory with advance and skip insertion of documents that are deleted later.
