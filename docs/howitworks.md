@@ -30,12 +30,14 @@ For those reasons i decided to write small and easy parser with [chumsky](https:
 
 Approximate string matching (aka fuzzy search) is the type of search that, instead of searching document by exact terms given in a query, can search for terms within a specified similarity to the ones given in a query. For example, in Minisearch following query will search all documents that contain word ‘elephant’ within a similarity of 2.
 
-"elephant~2"
+```"elephant~2"```
 
 Minisearch measures terms similarity by using Levenshtein Distance. It finds the minimal number of operations needed to transform one string into another, where operation can be either insertion of the new character, deletion of the character, or replacement of a character. For example Levenshtein Distance between “cat” and “call” is 2 because it needs at least two operations to transform either “cat” into “call” or “call” into “cat”.
 
+```
 - 1 - replace "t" in "cat" with "l" -> "cal"
 - 2 - insert "l" at the end of the "cal" -> "call"
+```
 
 The fuzzy search uses Levenshtein Distance to find all tokens stored in the inverted index that are within similarity N to the searching token. Brute force approach of doing that will be iterating through all of the tokens stored in inverted index and computing Levenshtein Distance between them and search token, which is highly inefficient especially with larger index. Luckily there is a lot better way of doing that.
 
@@ -82,7 +84,7 @@ The intersection process works by comparing the current document IDs returned by
 
 Minimal-interval semantics is the process of determining if document contains query tokens in the required order and with the required sloppiness. Sloppiness is essentially the number of extra tokens that can appear in the tokens interval. For example, query:
 
-"oh hello world"~2
+```"oh hello world"~2```
 
 Specifies sloppiness of 2, meaning that the document can contain 2 extra tokens in between the query tokens. So documents containing all of the following parts will match the above query:
 
@@ -92,32 +94,53 @@ Specifies sloppiness of 2, meaning that the document can contain 2 extra tokens 
 
 The actual matching process uses the [Greedy Block](assets/EfficientLazy.pdf "Greedy Block") algorithm. From the previous posting list intersection step, for each query token we obtain a token group containing all exact or approximate tokens that appear in the document, together with their positions. The input of the algorithm therefore, has the following structure:
 
-[[{“token”: “token1-sim”, “positions”: [1, 5, 7]}, {“token”: “token1-sim2”, “positions”: [2, 3, 9]}], [{“token”: “token2-sim”, “positions”: [4, 8]}], …]
+```
+[
+  [
+      {“token”: “x1”, “positions”: [1, 5, 7]},
+      {“token”: “x2”, “positions”: [2, 3, 9]}
+  ], 
+  [
+      {“token”: “y1”, “positions”: [4, 8]}
+  ],
+  …
+]
+```
 
 For each of this group, the token group iterator is constructed. This iterator helps merge the positions for all tokens in the group and return them in ascending order. It is constructed from tokens position iterators, then min-heap is created and for each token positions iterator the first position with it’s corresponding token is inserted into the heap. On each step, the smallest position is popped from the heap, and the next position from the corresponding token iterator is inserted.
 
-Let’s take a look at an example, for following tokens group
+Let's take a look at an example, how this process will look for following tokens group
 
-group = [{“token”: “x”, “positions”: [1, 4, 8]}, {“token”:“y”, “positions”: [2, 3, 7]}, {“token”:“z”, “positions”: [5, 6]}]
+```
+[
+  {“token”: “x1”, “positions”: [1, 4, 8]},
+  {“token”: “x2”, “positions”: [2, 3, 7]},
+  {“token”: “x3”, “positions”: [5, 6]}
+]
+```
 
-This process will look as follow
+For each token iterator over it's position is created
 
-                               Create heap and insert first position         After calling next pop the first element from
-                               from each iterator                            the heap and insert next position from
-                                                                             corresponding token iterator
+![pil-initial](assets/pil-initial.png "pil-initial")
 
-x_iterator = [1, 4, 8]         x_iterator = [4, 8]                           x_iterator = [8] <- inserted first element (4)
-y_iterator = [2, 3, 7]         y_iterator = [3, 7]                           y_iterator = [3, 7]
-z_iterator = [5, 6]            z_iterator = [6]                              z_iterator = [6]
-                               heap = [(1,x), (2,y), (5,z)]                  heap = [(2,y), (4,x), (5,z)] <- popped first element (1)
 
+Create heap and insert first position from each iterator 
+
+![pil-1](assets/pil-1.png "pil-1")
+
+
+After calling next, pop the first element from the heap and insert next position from corresponding token iterator
+
+![pil-2](assets/pil-2.png "pil-2")
 
 
 The minimal-interval algorithm maintains a vector of current positions, one per query token, and attempts to build an ordered sequence of positions using corresponding tokens group iterators. It starts by selecting a smallest position for the first query token, then for each subsequent token selects the smallest position that is greater than the previous one.
 
 The slop of the current interval is computed as:
 
+```
 slop = prev_slop + (end_position - start_position) - 1
+```
 
 If the slop is less than or equal to the allowed sloppiness, the algorithm advances to the next query token. If the slop exceeds the allowed value, the position of the first query token is advanced to its next available position and the process restarts. If positions are successfully selected for all query tokens, a matching minimal interval is found and returned. The algorithm continues searching until any token group iterator is exhausted, at which point no further matching intervals are possible.
 
@@ -154,7 +177,7 @@ Inverted index is persisted by using the append-only logs that record all update
 
 When inverted index is updated all add and delete operations are encoded into a binary format and saved into a memory buffer. After buffer size exceeds threshold (by default 1MB) or last save was older then the threshold (by default 5 seconds) then logs are written to the index file. For each log, the associated fixed-size log metadata is created, binary serialized as:
 
-doc_id:16 bytes|offset:8 bytes|size:4 bytes
+![log-metadata](assets/log-metadata.png "log-metadata")
 
 Each log, however, has a different size and stores the following informations:
 
