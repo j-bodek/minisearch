@@ -12,6 +12,7 @@ use pyo3::prelude::*;
 use std::fs::remove_dir_all;
 use std::io::{self, prelude::*};
 use std::os::unix::prelude::FileExt;
+use std::sync::Arc;
 use std::time::SystemTimeError;
 use std::{
     fs::{self, File},
@@ -21,12 +22,8 @@ use std::{
 use thiserror::Error;
 use ulid::Ulid;
 
+use crate::config::Config;
 use crate::errors::{BincodeDecodeError, BincodeEncodeError, CompressException};
-
-static SEGMENT_THRESHOLD: u64 = 50 * 1024 * 1024;
-static DOCUMENTS_BUFFER_THRESHOLD: u64 = 1024 * 1024;
-static SAVE_SECS_THRESHOLD: u64 = 5;
-static MERGE_THRESHOLD: f64 = 0.3;
 
 #[derive(Error, Debug)]
 pub enum DocumentBufferError {
@@ -220,10 +217,11 @@ pub struct DocumentsManager {
     segments: HashMap<PathBuf, Segment>,
     cur_segment: PathBuf,
     last_save: u64,
+    config: Arc<Config>,
 }
 
 impl DocumentsManager {
-    pub fn load(dir: PathBuf) -> Result<Self, DocumentsManagerError> {
+    pub fn load(dir: PathBuf, config: Arc<Config>) -> Result<Self, DocumentsManagerError> {
         let (mut documents, mut segments_map) = (HashMap::new(), HashMap::new());
 
         let cur_segment = match Self::segments(&dir)? {
@@ -290,6 +288,7 @@ impl DocumentsManager {
             last_save: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)?
                 .as_secs(),
+            config: config,
         })
     }
 
@@ -381,7 +380,7 @@ impl DocumentsManager {
         segments.sort_by(|x, y| x.1.name.cmp(&y.1.name));
 
         for (path, segment) in segments {
-            if (segment.deleted as f64 / segment.size as f64) < MERGE_THRESHOLD {
+            if (segment.deleted as f64 / segment.size as f64) < self.config.merge_deleted_ratio {
                 continue;
             }
 
@@ -518,15 +517,15 @@ impl DocumentsManager {
             .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs();
 
-        if self.buffer.documents.len() as u64 > DOCUMENTS_BUFFER_THRESHOLD
-            || cur_ts >= self.last_save + SAVE_SECS_THRESHOLD
+        if self.buffer.documents.len() as u64 > self.config.documents_buffer_size
+            || cur_ts >= self.last_save + self.config.documents_save_after_seconds
         {
             self.last_save = cur_ts;
             self.flush()?;
         }
 
         // check if segment size exceded threshold - 100MB
-        if segment_size > SEGMENT_THRESHOLD {
+        if segment_size > self.config.segment_size {
             self.flush()?;
             let (path, segment) = Self::create_segment(&self.dir)?;
             self.segments.insert(path.clone(), segment);

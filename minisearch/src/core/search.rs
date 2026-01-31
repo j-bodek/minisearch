@@ -1,4 +1,5 @@
 use crate::analysis::tokenizer::Tokenizer;
+use crate::config::Config;
 use crate::core::index::{IndexManager, Posting};
 use crate::errors::{BincodePersistenceError, UlidDecodeError, UlidMonotonicError};
 use crate::matching::intersect::PostingListIntersection;
@@ -16,13 +17,11 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use std::fs::{self, File};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::SystemTime;
 use std::vec::Vec;
 use thiserror::Error;
 use ulid::{Generator, MonotonicError, Ulid};
-
-static SEARCH_META_OPERATIONS_THRESHOLD: u32 = 100_000;
-static SAVE_META_SECS_THRESHOLD: u64 = 10;
 
 #[derive(Error, Debug)]
 enum UlidError {
@@ -51,11 +50,13 @@ struct SearchMeta {
     operations: u32,
     last_save: u64,
     data: SearchMetaData,
+    config: Arc<Config>,
 }
 
 impl SearchMeta {
-    fn new(path: PathBuf) -> Result<Self, BincodePersistenceError> {
+    fn new(path: PathBuf, config: Arc<Config>) -> Result<Self, BincodePersistenceError> {
         Ok(Self {
+            config: config,
             path: path,
             operations: 0,
             last_save: SystemTime::now()
@@ -65,10 +66,10 @@ impl SearchMeta {
         })
     }
 
-    fn load(path: PathBuf) -> Result<Self, BincodePersistenceError> {
+    fn load(path: PathBuf, config: Arc<Config>) -> Result<Self, BincodePersistenceError> {
         if !fs::exists(&path)? {
             File::create(&path)?;
-            return Ok(Self::new(path)?);
+            return Ok(Self::new(path, config)?);
         }
 
         let mut file = File::open(&path)?;
@@ -79,6 +80,7 @@ impl SearchMeta {
         };
 
         Ok(Self {
+            config: config,
             path: path,
             operations: 0,
             last_save: SystemTime::now()
@@ -102,8 +104,8 @@ impl SearchMeta {
 
         self.operations += 1;
 
-        if self.operations >= SEARCH_META_OPERATIONS_THRESHOLD
-            || cur_ts >= self.last_save + SAVE_META_SECS_THRESHOLD
+        if self.operations >= self.config.metadata_save_after_operations
+            || cur_ts >= self.last_save + self.config.metadata_save_after_seconds
         {
             self.flush()?;
             self.operations = 0;
@@ -166,25 +168,27 @@ pub struct Search {
 #[pymethods]
 impl Search {
     #[new]
-    fn new(dir: PathBuf) -> PyResult<Self> {
+    fn new(dir: PathBuf, config: Option<PathBuf>) -> PyResult<Self> {
         let mut fuzzy_trie = Trie::new();
         for i in 0..3 {
             fuzzy_trie.init_automaton(i);
         }
 
-        let hasher = TokenHasher::load(&dir)?;
+        let config = Arc::new(Config::load(config)?);
+
+        let hasher = TokenHasher::load(&dir, Arc::clone(&config))?;
         for token in hasher.tokens() {
             fuzzy_trie.add(token);
         }
 
         Ok(Self {
-            index_manager: IndexManager::load(&dir)?,
-            meta: SearchMeta::load(dir.join("meta"))?,
+            index_manager: IndexManager::load(&dir, Arc::clone(&config))?,
+            meta: SearchMeta::load(dir.join("meta"), Arc::clone(&config))?,
             hasher: hasher,
-            documents_manager: DocumentsManager::load(dir)?,
+            documents_manager: DocumentsManager::load(dir, Arc::clone(&config))?,
             deleted_documents: HashSet::with_capacity(100),
             ulid_generator: Generator::new(),
-            tokenizer: Tokenizer::new(),
+            tokenizer: Tokenizer::new(Arc::clone(&config)),
             fuzzy_trie: fuzzy_trie,
         })
     }

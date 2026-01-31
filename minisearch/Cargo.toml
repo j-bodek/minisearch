@@ -19,3 +19,5 @@ lz4_flex = "0.12.0"
 bincode = "2.0.1"
 thiserror = "2.0.17"
 memmap2 = "0.9.9"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.9.11"

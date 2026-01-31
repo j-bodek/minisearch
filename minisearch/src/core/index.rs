@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::errors::{
     BincodeDecodeError, BincodePersistenceError, TryFromSliceException, UnknownLogOperation,
 };
@@ -9,6 +10,7 @@ use std::borrow::Cow;
 use std::fs::{self, File};
 use std::io::Write;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::{SystemTime, SystemTimeError};
 use std::{io, path::PathBuf};
 
@@ -26,9 +28,6 @@ use std::fmt::Debug;
 use thiserror::Error;
 
 use ulid::Ulid;
-
-static BUFFER_THRESHOLD: u64 = 1024 * 1024;
-static SAVE_SECS_THRESHOLD: u64 = 5;
 
 #[derive(Error, Debug)]
 pub enum FromBytesError {
@@ -439,10 +438,11 @@ impl<'a> Iterator for LogsReader<'a> {
 struct LogsManager {
     last_save: u64,
     buffer: Buffer,
+    config: Arc<Config>,
 }
 
 impl LogsManager {
-    fn new(dir: PathBuf) -> Result<Self, SystemTimeError> {
+    fn new(dir: PathBuf, config: Arc<Config>) -> Result<Self, SystemTimeError> {
         Ok(Self {
             last_save: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)?
@@ -453,6 +453,7 @@ impl LogsManager {
                 index: Vec::new(),
                 meta: Vec::new(),
             },
+            config: config,
         })
     }
 
@@ -462,8 +463,8 @@ impl LogsManager {
             .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs();
 
-        if self.buffer.index.len() as u64 > BUFFER_THRESHOLD
-            || cur_ts >= self.last_save + SAVE_SECS_THRESHOLD
+        if self.buffer.index.len() as u64 > self.config.index_buffer_size
+            || cur_ts >= self.last_save + self.config.index_save_after_seconds
         {
             self.last_save = cur_ts;
             self.buffer.flush()?;
@@ -546,7 +547,7 @@ pub struct IndexManager {
 }
 
 impl IndexManager {
-    pub fn load(dir: &PathBuf) -> Result<Self, IndexManagerError> {
+    pub fn load(dir: &PathBuf, config: Arc<Config>) -> Result<Self, IndexManagerError> {
         let index_dir = dir.join("index");
         let (index, meta) = (index_dir.join("index"), index_dir.join("meta"));
         if !fs::exists(&index_dir)? || !fs::exists(&index)? || !fs::exists(&meta)? {
@@ -555,7 +556,7 @@ impl IndexManager {
             File::create(&meta)?;
         }
 
-        let logs_manager = LogsManager::new(index_dir)?;
+        let logs_manager = LogsManager::new(index_dir, config)?;
 
         Ok(Self {
             index: logs_manager.load(ReadDirection::BACKWARD)?,

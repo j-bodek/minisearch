@@ -1,13 +1,9 @@
-use crate::analysis::stemmer::SnowballStemmer;
-use crate::query::parser::Query;
-use hashbrown::{HashMap, HashSet};
-use unicode_segmentation::UnicodeSegmentation;
+use std::sync::Arc;
 
-static STOP_WORDS: [&str; 35] = [
-    "a", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it", "no",
-    "not", "of", "on", "or", "s", "such", "t", "that", "the", "their", "then", "there", "these",
-    "they", "this", "to", "was", "will", "with", "www",
-];
+use crate::query::parser::Query;
+use crate::{analysis::stemmer::SnowballStemmer, config::Config};
+use hashbrown::HashMap;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug)]
 pub struct Token {
@@ -22,33 +18,15 @@ pub struct TokenizedQuery {
 
 pub struct Tokenizer {
     stemmer: SnowballStemmer,
+    config: Arc<Config>,
 }
 
 impl Tokenizer {
-    pub fn new() -> Self {
+    pub fn new(config: Arc<Config>) -> Self {
         Self {
             stemmer: SnowballStemmer::new(),
+            config: config,
         }
-    }
-
-    pub fn docs_tokens(&self, docs: Vec<String>) -> HashSet<String> {
-        let mut tokens: HashSet<String> = HashSet::new();
-
-        for doc in docs {
-            for word in doc.unicode_words() {
-                if STOP_WORDS.contains(&word) {
-                    continue;
-                }
-
-                if tokens.contains(word) {
-                    continue;
-                }
-
-                tokens.insert(word.to_ascii_lowercase());
-            }
-        }
-
-        return tokens;
     }
 
     pub fn tokenize_doc(&mut self, doc: &mut str) -> (u32, HashMap<String, Vec<u32>>) {
@@ -57,7 +35,7 @@ impl Tokenizer {
         let mut i = 0;
         for word in doc.unicode_words() {
             let word = word.to_owned().to_ascii_lowercase();
-            if STOP_WORDS.contains(&word.as_str()) {
+            if self.config.stop_words.contains(word.as_str()) {
                 continue;
             }
             let word = self.stemmer.stem(word);
@@ -72,7 +50,7 @@ impl Tokenizer {
         let mut tokens: Vec<Token> = Vec::with_capacity(query.terms.len());
 
         for term in query.terms {
-            if STOP_WORDS.contains(&term.text) {
+            if self.config.stop_words.contains(term.text) {
                 continue;
             }
 

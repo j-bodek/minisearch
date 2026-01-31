@@ -3,16 +3,14 @@ use std::{
     fs::{self, File},
     io,
     path::PathBuf,
+    sync::Arc,
     time::SystemTime,
 };
 
 use bincode::{Decode, Encode};
 use std::collections::HashMap;
 
-use crate::errors::BincodePersistenceError;
-
-static OPERATIONS_THRESHOLD: u32 = 100_000;
-static SAVE_SECS_THRESHOLD: u64 = 5;
+use crate::{config::Config, errors::BincodePersistenceError};
 
 #[derive(Decode, Encode, PartialEq, Debug, Clone)]
 struct TokensStore {
@@ -54,13 +52,14 @@ impl TokensStore {
 
 pub struct TokenHasher {
     path: PathBuf,
-    operations: u32,
+    operations: u64,
     last_save: u64,
     tokens_store: TokensStore,
+    config: Arc<Config>,
 }
 
 impl TokenHasher {
-    pub fn load(dir: &PathBuf) -> Result<Self, BincodePersistenceError> {
+    pub fn load(dir: &PathBuf, config: Arc<Config>) -> Result<Self, BincodePersistenceError> {
         let index_dir = dir.join("index");
         let tokens = index_dir.join("tokens");
         if !fs::exists(&index_dir)? || !fs::exists(&tokens)? {
@@ -75,6 +74,7 @@ impl TokenHasher {
             last_save: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)?
                 .as_secs(),
+            config: config,
         })
     }
 
@@ -144,7 +144,8 @@ impl TokenHasher {
             .duration_since(SystemTime::UNIX_EPOCH)?
             .as_secs();
 
-        if self.operations >= OPERATIONS_THRESHOLD || cur_ts >= self.last_save + SAVE_SECS_THRESHOLD
+        if self.operations >= self.config.index_save_after_operations
+            || cur_ts >= self.last_save + self.config.index_save_after_seconds
         {
             self.operations = 0;
             self.last_save = cur_ts;

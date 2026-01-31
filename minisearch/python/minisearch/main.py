@@ -5,14 +5,14 @@ from contextlib import contextmanager
 
 
 class Index:
-    def __init__(self, dir: str) -> None:
+    def __init__(self, dir: str, conf: str | None = None) -> None:
         """
         Create or load an index stored in "dir"
 
         Raises:
             IndexInitError: load/create index state failed
         """
-        self._search_rs = SearchRs(dir)
+        self._search_rs = SearchRs(dir, conf)
 
     @contextmanager
     def session(self) -> Generator[None, None, None]:
@@ -75,11 +75,12 @@ class Index:
 
 class MiniSearch:
 
-    def __init__(self):
+    def __init__(self, conf: str | None = None):
         """Create an in-memory registry of indexes"""
+        self._conf = conf
         self._indexes: dict[str, Index] = {}
 
-    def add(self, index: str, dir: str) -> tuple[bool, Index]:
+    def add(self, index: str, dir: str, conf: str | None = None) -> tuple[bool, Index]:
         """
         Get or create an index handle
 
@@ -87,7 +88,7 @@ class MiniSearch:
             IndexInitError: load/create index state failed
         """
         if index not in self._indexes:
-            self._indexes[index] = Index(dir)
+            self._indexes[index] = Index(dir, conf or self._conf)
             return (True, self._indexes[index])
 
         return (False, self._indexes[index])
