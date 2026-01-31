@@ -11,6 +11,11 @@ create_exception!(crate, BincodeDecodeError, pyo3::exceptions::PyException);
 create_exception!(crate, UlidMonotonicError, pyo3::exceptions::PyException);
 create_exception!(crate, UlidDecodeError, pyo3::exceptions::PyException);
 create_exception!(crate, CompressException, pyo3::exceptions::PyException);
+create_exception!(
+    crate,
+    TomlDeserializeException,
+    pyo3::exceptions::PyException
+);
 
 #[derive(Error, Debug)]
 pub enum BincodePersistenceError {

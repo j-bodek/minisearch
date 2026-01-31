@@ -6,6 +6,7 @@ from .rust import (
     UlidDecodeError,
     UlidMonotonicError,
     UnknownLogOperation,
+    TomlDeserializeException,
 )
 
 
@@ -15,6 +16,7 @@ class IndexInitError(
     CompressException,
     TryFromSliceException,
     UnknownLogOperation,
+    TomlDeserializeException,
 ):
     """Errors raised by Index.__init__"""
 

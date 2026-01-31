@@ -1,6 +1,26 @@
 use serde::Deserialize;
 use std::{collections::HashSet, fs, io, path::PathBuf};
-use toml;
+use thiserror::Error;
+use toml::{self, de::Error};
+
+use crate::errors::TomlDeserializeException;
+
+#[derive(Error, Debug)]
+pub enum ConfigError {
+    #[error("config: toml error: {0}")]
+    TomlDeError(#[from] Error),
+    #[error("config: io error: {0}")]
+    Io(#[from] io::Error),
+}
+
+impl From<ConfigError> for pyo3::PyErr {
+    fn from(err: ConfigError) -> Self {
+        match err {
+            ConfigError::TomlDeError(err) => TomlDeserializeException::new_err(err.to_string()),
+            ConfigError::Io(err) => err.into(),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
@@ -50,12 +70,11 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn load(path: Option<PathBuf>) -> Result<Self, io::Error> {
+    pub fn load(path: Option<PathBuf>) -> Result<Self, ConfigError> {
         let config = match path {
             Some(path) => {
                 let config: String = fs::read_to_string(path)?;
-                // todo handle this unwrap properly
-                toml::from_str(&config).unwrap()
+                toml::from_str(&config)?
             }
             None => Self::default(),
         };
