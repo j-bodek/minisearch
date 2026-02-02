@@ -72,6 +72,15 @@ class Index:
         """
         return self._search_rs.flush()
 
+    def merge(self) -> None:
+        """
+        Merges segments for which merge conditions are met
+
+        Raises:
+            IndexMergeError: flush failed
+        """
+        return self._search_rs.merge()
+
 
 class MiniSearch:
 

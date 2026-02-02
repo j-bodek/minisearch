@@ -325,7 +325,7 @@ impl DocumentsManager {
         return Ok(());
     }
 
-    pub fn delete(&mut self, id: &Ulid) -> Result<(), io::Error> {
+    pub fn delete(&mut self, id: &Ulid) -> Result<(), DocumentsManagerError> {
         let doc = match self.docs.get(id) {
             Some(doc) => doc,
             None => return Ok(()),
@@ -368,58 +368,78 @@ impl DocumentsManager {
             .collect::<Vec<(PathBuf, Segment)>>();
         segments.sort_by(|x, y| x.1.name.cmp(&y.1.name));
 
+        let mut merged = false;
         for (path, segment) in segments {
-            if (segment.deleted as f64 / segment.size as f64) < self.config.merge_deleted_ratio {
+            merged = merged || self.merge_segment(path, segment)?;
+        }
+
+        if merged {
+            self.flush()?;
+        }
+
+        Ok(())
+    }
+
+    fn merge_segment(
+        &mut self,
+        path: PathBuf,
+        segment: Segment,
+    ) -> Result<bool, DocumentsManagerError> {
+        if path == self.cur_segment
+            || segment.size == 0
+            || (segment.deleted as f64 / segment.size as f64) < self.config.merge_deleted_ratio
+        {
+            return Ok(false);
+        }
+
+        let mut deletes = HashSet::new();
+        let mut del = File::open(path.join("del"))?;
+        let del_size = del.metadata()?.len();
+
+        while del.stream_position()? < del_size {
+            let mut ulid = [0u8; 16];
+            del.read_exact(&mut ulid)?;
+            del.seek_relative(8)?; // skip 'deleted size'
+            deletes.insert(Ulid::from_bytes(ulid));
+        }
+
+        let data = File::open(path.join("data"))?;
+        let mut meta = File::open(path.join("meta"))?;
+        let meta_size = meta.metadata()?.len();
+
+        while meta.stream_position()? < meta_size {
+            let mut size_buf = [0u8; 8];
+            meta.read_exact(&mut size_buf)?;
+            let size = u64::from_be_bytes(size_buf);
+            let mut doc_buf = vec![0u8; size as usize];
+            meta.read_exact(&mut doc_buf)?;
+            let (mut doc, _): (Document, usize) =
+                bincode::decode_from_slice(&doc_buf, bincode::config::standard())?;
+
+            let ulid = Ulid::from_bytes(doc.id);
+            if deletes.contains(&ulid) {
                 continue;
             }
 
-            let mut deletes = HashSet::new();
-            let mut del = File::open(path.join("del"))?;
-            let del_size = del.metadata()?.len();
+            let offset = self.buffer.documents.len();
+            self.buffer.documents.resize(offset + doc.location.size, 0);
+            data.read_at(&mut self.buffer.documents[offset..], doc.location.offset)?;
 
-            while del.stream_position()? < del_size {
-                let mut ulid = [0u8; 16];
-                del.read_exact(&mut ulid)?;
-                del.seek_relative(8)?; // skip 'deleted size'
-                deletes.insert(Ulid::from_bytes(ulid));
-            }
+            // update in-memory document
+            doc.location.segment = self.cur_segment.clone();
+            doc.location.offset = self.buffer.segment_size(&self.cur_segment)? + offset as u64;
 
-            let data = File::open(path.join("data"))?;
-            let mut meta = File::open(path.join("meta"))?;
-            let meta_size = meta.metadata()?.len();
+            self.buffer.write_meta(&doc)?;
+            self.docs.insert(ulid, doc);
 
-            while meta.stream_position()? < meta_size {
-                let mut size_buf = [0u8; 8];
-                meta.read_exact(&mut size_buf)?;
-                let size = u64::from_be_bytes(size_buf);
-                let mut doc_buf = vec![0u8; size as usize];
-                meta.read_exact(&mut doc_buf)?;
-                let (doc, _): (Document, usize) =
-                    bincode::decode_from_slice(&doc_buf, bincode::config::standard())?;
-
-                let ulid = Ulid::from_bytes(doc.id);
-                if deletes.contains(&ulid) {
-                    continue;
-                }
-
-                let offset = self.buffer.documents.len();
-                self.buffer.documents.resize(offset + doc.location.size, 0);
-                data.read_at(&mut self.buffer.documents[offset..], doc.location.offset)?;
-
-                self.buffer.meta.extend(size_buf);
-                self.buffer.meta.extend(doc_buf);
-
-                let segment_size = self.buffer.segment_size(&self.cur_segment)?
-                    + self.buffer.documents.len() as u64;
-                self.save_buffer(segment_size)?;
-            }
-
-            remove_dir_all(&path)?;
-            self.segments.remove(&path);
+            let segment_size =
+                self.buffer.segment_size(&self.cur_segment)? + self.buffer.documents.len() as u64;
+            self.save_buffer(segment_size)?;
         }
-        self.flush()?;
 
-        Ok(())
+        remove_dir_all(&path)?;
+        self.segments.remove(&path);
+        return Ok(true);
     }
 
     fn create_segment(dir: &PathBuf) -> Result<(PathBuf, Segment), DocumentsManagerError> {
@@ -524,6 +544,7 @@ impl DocumentsManager {
             self.flush()?;
             let (path, segment) = Self::create_segment(&self.dir)?;
             self.segments.insert(path.clone(), segment);
+            self.buffer.reset();
             self.cur_segment = path;
             self.last_save = cur_ts;
         }

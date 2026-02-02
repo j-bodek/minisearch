@@ -46,6 +46,16 @@ class IndexDeleteError(
     """Errors raised by Index.delete."""
 
 
+class IndexMergeError(
+    UlidDecodeError,
+    BincodeDecodeError,
+    BincodeEncodeError,
+    TryFromSliceException,
+    UnknownLogOperation,
+):
+    """Errors raised by Index.merge."""
+
+
 class IndexFlushError(BincodeEncodeError):
     """Errors raised by Index.flush."""
 
