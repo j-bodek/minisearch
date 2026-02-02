@@ -226,27 +226,16 @@ impl DocumentsManager {
 
         let cur_segment = match Self::segments(&dir)? {
             Some(segments) => {
-                let mut deletes = HashSet::new();
                 let cur_segment = segments
                     .iter()
-                    .max_by(|(_, x), (_, y)| x.name.cmp(&y.name))
+                    .max_by(|(_, x, _), (_, y, _)| x.name.cmp(&y.name))
                     .unwrap()
                     .0
                     .clone();
 
                 // TODO: in future can validate segment files before loading them
                 // to check if they are not malicious or corrupted
-                for (path, segment) in segments {
-                    let mut del = File::open(path.join("del"))?;
-                    let del_size = del.metadata()?.len();
-
-                    while del.stream_position()? < del_size {
-                        let mut ulid = [0u8; 16];
-                        del.read_exact(&mut ulid)?;
-                        del.seek_relative(8)?; // skip 'deleted size'
-                        deletes.insert(Ulid::from_bytes(ulid));
-                    }
-
+                for (path, segment, deletes) in segments {
                     let mut meta = File::open(path.join("meta"))?;
                     let meta_size = meta.metadata()?.len();
 
@@ -453,7 +442,9 @@ impl DocumentsManager {
         ))
     }
 
-    fn segments(dir: &PathBuf) -> Result<Option<Vec<(PathBuf, Segment)>>, io::Error> {
+    fn segments(
+        dir: &PathBuf,
+    ) -> Result<Option<Vec<(PathBuf, Segment, HashSet<Ulid>)>>, io::Error> {
         match fs::exists(&dir)? {
             true => {
                 let mut segments = vec![];
@@ -479,13 +470,16 @@ impl DocumentsManager {
                     let mut del = File::open(path.join("del"))?;
 
                     let del_size = del.metadata()?.len();
-                    let mut deleted = 0;
+                    let mut deleted_bytes = 0;
+                    let mut deletes = HashSet::new();
 
                     while del.stream_position()? < del_size {
-                        let mut size = [0u8; 8];
-                        del.seek_relative(16)?; // skip 'ulid'
+                        let (mut size, mut deleted) = ([0u8; 8], [0u8; 16]);
+                        del.read_exact(&mut deleted)?;
                         del.read_exact(&mut size)?;
-                        deleted += u64::from_be_bytes(size);
+
+                        deletes.insert(Ulid::from_bytes(deleted));
+                        deleted_bytes += u64::from_be_bytes(size);
                     }
 
                     segments.push((
@@ -493,8 +487,9 @@ impl DocumentsManager {
                         Segment {
                             name: name,
                             size: data.metadata()?.len(),
-                            deleted: deleted,
+                            deleted: deleted_bytes,
                         },
+                        deletes,
                     ));
                 }
 
