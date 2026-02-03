@@ -157,7 +157,6 @@ impl Eq for SearchResult {}
 pub struct Search {
     index_manager: IndexManager,
     documents_manager: DocumentsManager,
-    deleted_documents: HashSet<Ulid>,
     ulid_generator: Generator,
     tokenizer: Tokenizer,
     hasher: TokenHasher,
@@ -186,7 +185,6 @@ impl Search {
             meta: SearchMeta::load(dir.join("meta"), Arc::clone(&config))?,
             hasher: hasher,
             documents_manager: DocumentsManager::load(dir, Arc::clone(&config))?,
-            deleted_documents: HashSet::with_capacity(100),
             ulid_generator: Generator::new(),
             tokenizer: Tokenizer::new(Arc::clone(&config)),
             fuzzy_trie: fuzzy_trie,
@@ -250,11 +248,10 @@ impl Search {
             Err(e) => return Err(UlidError::UlidDecodeError(e).into()),
         };
 
-        self.deleted_documents.insert(id);
-        self.documents_manager.delete(&id)?;
+        self.documents_manager.delete(id)?;
 
-        if self.deleted_documents.len() >= self.documents_manager.docs.len() / 20 // if greater then 5% of all documents
-            || self.deleted_documents.len() <= 1000
+        if self.documents_manager.deleted_docs_buffer.len() <= self.documents_manager.docs.len() / 20 // delete if greater then 5% of all documents
+            || self.documents_manager.deleted_docs_buffer.len() <= 1000
         {
             return Ok(true);
         }
@@ -283,7 +280,11 @@ impl Search {
 
         while let Some(pointers) = intersection.next() {
             let (doc_id, mut score) = (pointers[0][0].doc_id, 0.0);
-            if self.deleted_documents.contains(&doc_id) {
+            if self
+                .documents_manager
+                .deleted_docs_buffer
+                .contains_key(&doc_id)
+            {
                 continue;
             }
 
@@ -371,21 +372,21 @@ impl Search {
 
 impl Search {
     fn force_delete(&mut self) -> PyResult<bool> {
-        let mut tokens = HashSet::new();
-        for d_id in self.deleted_documents.iter() {
-            if let Some(doc) = self.documents_manager.docs.remove(d_id) {
-                tokens.extend(doc.tokens);
-            }
+        let (mut tokens, mut document_ids) = (
+            HashSet::new(),
+            HashSet::with_capacity(self.documents_manager.deleted_docs_buffer.len()),
+        );
+        for (id, doc) in self.documents_manager.deleted_docs_buffer.drain() {
+            tokens.extend(doc.tokens);
+            document_ids.insert(id);
         }
 
         self.index_manager.delete(
             &tokens,
-            &self.deleted_documents,
+            &document_ids,
             &mut self.fuzzy_trie,
             &mut self.hasher,
         )?;
-
-        self.deleted_documents.drain();
 
         Ok(true)
     }

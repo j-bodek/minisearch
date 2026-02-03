@@ -213,6 +213,7 @@ impl Buffer {
 pub struct DocumentsManager {
     pub dir: PathBuf,
     pub docs: HashMap<Ulid, Document>,
+    pub deleted_docs_buffer: HashMap<Ulid, Document>,
     buffer: Buffer,
     segments: HashMap<PathBuf, Segment>,
     cur_segment: PathBuf,
@@ -270,6 +271,7 @@ impl DocumentsManager {
 
         Ok(Self {
             docs: documents,
+            deleted_docs_buffer: HashMap::with_capacity(100),
             dir: dir,
             buffer: Buffer::new(),
             segments: segments_map,
@@ -279,22 +281,6 @@ impl DocumentsManager {
                 .as_secs(),
             config: config,
         })
-    }
-
-    pub fn len(&self) -> usize {
-        return self.docs.len();
-    }
-
-    pub fn get(&self, id: &Ulid) -> Option<&Document> {
-        self.docs.get(id)
-    }
-
-    pub fn insert(&mut self, id: Ulid, doc: Document) -> Option<Document> {
-        self.docs.insert(id, doc)
-    }
-
-    pub fn remove(&mut self, id: &Ulid) -> Option<Document> {
-        self.docs.remove(id)
     }
 
     pub fn write(
@@ -325,8 +311,8 @@ impl DocumentsManager {
         return Ok(());
     }
 
-    pub fn delete(&mut self, id: &Ulid) -> Result<(), DocumentsManagerError> {
-        let doc = match self.docs.get(id) {
+    pub fn delete(&mut self, id: Ulid) -> Result<(), DocumentsManagerError> {
+        let doc = match self.docs.get(&id) {
             Some(doc) => doc,
             None => return Ok(()),
         };
@@ -338,6 +324,10 @@ impl DocumentsManager {
         deletes.write_all(&(doc.location.size as u64).to_be_bytes())?;
         if let Some(segment) = self.segments.get_mut(&doc.location.segment) {
             segment.deleted += doc.location.size as u64;
+        }
+
+        if let Some(doc) = self.docs.remove(&id) {
+            self.deleted_docs_buffer.insert(id, doc);
         }
         Ok(())
     }
