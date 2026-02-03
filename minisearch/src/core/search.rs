@@ -62,7 +62,7 @@ impl SearchMeta {
             last_save: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)?
                 .as_secs(),
-            data: SearchMetaData { avg_doc_len: 0.0 },
+            data: SearchMetaData { avg_doc_len: 1.0 },
         })
     }
 
@@ -76,7 +76,7 @@ impl SearchMeta {
         let data: SearchMetaData = if file.metadata()?.len() > 0 {
             bincode::decode_from_std_read(&mut file, bincode::config::standard())?
         } else {
-            SearchMetaData { avg_doc_len: 0.0 }
+            SearchMetaData { avg_doc_len: 1.0 }
         };
 
         Ok(Self {
