@@ -109,7 +109,7 @@ impl Document {
 
                 let data = File::open(segment.join("data"))?;
                 let mut buf = vec![0u8; *size];
-                data.read_at(&mut buf, *offset)?;
+                data.read_exact_at(&mut buf, *offset)?;
                 let data = match decompress_size_prepended(&buf) {
                     Ok(data) => data,
                     Err(err) => {
@@ -311,7 +311,7 @@ impl DocumentsManager {
         return Ok(());
     }
 
-    pub fn delete(&mut self, id: Ulid) -> Result<(), DocumentsManagerError> {
+    pub fn delete(&mut self, id: Ulid) -> Result<(), io::Error> {
         let doc = match self.docs.get(&id) {
             Some(doc) => doc,
             None => return Ok(()),
@@ -413,7 +413,7 @@ impl DocumentsManager {
 
             let offset = self.buffer.documents.len();
             self.buffer.documents.resize(offset + doc.location.size, 0);
-            data.read_at(&mut self.buffer.documents[offset..], doc.location.offset)?;
+            data.read_exact_at(&mut self.buffer.documents[offset..], doc.location.offset)?;
 
             // update in-memory document
             doc.location.segment = self.cur_segment.clone();
