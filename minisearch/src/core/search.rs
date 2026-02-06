@@ -93,10 +93,11 @@ impl SearchMeta {
     fn update_avg_doc_len(
         &mut self,
         docs_num: usize,
-        new_doc_len: u32,
+        docs_num_after: usize,
+        new_doc_len: i64,
     ) -> Result<(), BincodePersistenceError> {
         self.data.avg_doc_len = (self.data.avg_doc_len * docs_num as f64 + new_doc_len as f64)
-            / (docs_num as f64 + 1.0);
+            / (docs_num_after as f64);
 
         let cur_ts = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)?
@@ -199,10 +200,13 @@ impl Search {
 
         let (tokens_num, tokens_map) = self.tokenizer.tokenize_doc(&mut doc);
 
-        self.meta
-            .update_avg_doc_len(self.documents_manager.docs.len(), tokens_num)?;
+        self.meta.update_avg_doc_len(
+            self.documents_manager.docs.len(),
+            self.documents_manager.docs.len() + 1,
+            tokens_num as i64,
+        )?;
 
-        let mut tokens = Vec::with_capacity(tokens_num as usize);
+        let mut tokens = Vec::with_capacity(tokens_map.len());
         for (token, positions) in tokens_map {
             if !self.hasher.contains(&token) {
                 self.fuzzy_trie.add(&token);
@@ -218,7 +222,8 @@ impl Search {
             tokens.push(token);
         }
 
-        self.documents_manager.write(doc_id, tokens, &doc)?;
+        self.documents_manager
+            .write(doc_id, tokens_num, tokens, &doc)?;
 
         Ok(doc_id.to_string())
     }
@@ -372,14 +377,24 @@ impl Search {
 
 impl Search {
     fn force_delete(&mut self) -> PyResult<bool> {
-        let (mut tokens, mut document_ids) = (
-            HashSet::new(),
-            HashSet::with_capacity(self.documents_manager.deleted_docs_buffer.len()),
-        );
+        let (mut deleted_len_sum, deleted_docs_num) =
+            (0, self.documents_manager.deleted_docs_buffer.len());
+
+        let (mut tokens, mut document_ids) =
+            (HashSet::new(), HashSet::with_capacity(deleted_docs_num));
+
         for (id, doc) in self.documents_manager.deleted_docs_buffer.drain() {
             tokens.extend(doc.tokens);
             document_ids.insert(id);
+            deleted_len_sum += doc.len;
         }
+
+        // update avg len
+        self.meta.update_avg_doc_len(
+            self.documents_manager.docs.len() + deleted_docs_num,
+            self.documents_manager.docs.len(),
+            -1 * deleted_len_sum as i64,
+        )?;
 
         self.index_manager.delete(
             &tokens,

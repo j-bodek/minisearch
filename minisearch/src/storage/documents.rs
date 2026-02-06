@@ -75,15 +75,17 @@ pub struct Document {
     pub id: [u8; 16], // binary representation of ULID
     data: Option<String>,
     pub location: DocLocation,
+    pub len: u32,
     pub tokens: Vec<u32>,
 }
 
 impl Document {
-    fn new(id: [u8; 16], location: DocLocation, tokens: Vec<u32>) -> Self {
+    fn new(id: [u8; 16], location: DocLocation, len: u32, tokens: Vec<u32>) -> Self {
         Self {
             id: id,
             data: None,
             location: location,
+            len: len,
             tokens: tokens,
         }
     }
@@ -286,6 +288,7 @@ impl DocumentsManager {
     pub fn write(
         &mut self,
         id: Ulid,
+        len: u32,
         tokens: Vec<u32>,
         content: &str,
     ) -> Result<(), DocumentsManagerError> {
@@ -300,6 +303,7 @@ impl DocumentsManager {
                 offset: offset,
                 size: size,
             },
+            len,
             tokens,
         );
 
