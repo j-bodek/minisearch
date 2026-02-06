@@ -370,6 +370,8 @@ impl Search {
     }
 
     fn merge(&mut self) -> PyResult<()> {
+        // flush data before merge
+        self.flush();
         self.documents_manager.merge()?;
         Ok(())
     }
