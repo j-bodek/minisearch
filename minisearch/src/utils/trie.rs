@@ -83,28 +83,33 @@ impl Trie {
 }
 
 impl Trie {
-    fn _delete(chars: &mut Vec<char>, nodes: &mut Vec<(char, Node)>) -> (bool, bool) {
+    fn _delete(chars: &mut Vec<char>, nodes: &mut Vec<(char, Node)>) -> (usize, bool, bool) {
         if chars.len() == 0 {
-            return (true, true);
+            return (0, false, true);
         }
 
         if let Ok(index) = nodes.binary_search_by(|t| t.0.cmp(&chars[chars.len() - 1])) {
             chars.pop();
+            let node = &mut nodes.get_mut(index).unwrap().1;
 
             if chars.len() == 0 {
-                nodes[index].1.is_word = false;
-                return (nodes[index].1.nodes.len() == 0, true);
+                node.is_word = false;
+                return (index, node.nodes.len() == 0, true);
             } else {
-                let (can_remove, deleted) = Self::_delete(chars, &mut nodes[index].1.nodes);
-                if can_remove && nodes[index].1.nodes.len() == 1 {
-                    nodes[index].1.nodes.pop();
-                    return (true, deleted);
+                let (idx, can_remove, deleted) = Self::_delete(chars, &mut node.nodes);
+                if can_remove && deleted {
+                    node.nodes.remove(idx);
+                    return (
+                        index,
+                        node.nodes.len() == 0 && node.is_word == false,
+                        deleted,
+                    );
                 }
-                return (false, deleted);
+                return (index, false, deleted);
             }
         }
 
-        return (false, false);
+        return (0, false, false);
     }
 
     fn _search(
