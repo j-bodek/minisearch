@@ -31,7 +31,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
+      - name: Build wheels (s390x)
+        if: matrix.platform.target == 's390x'
+        uses: PyO3/maturin-action@v1
+        env:
+          CFLAGS_s390x_unknown_linux_gnu: -march=z196 -mtune=z196
+          CFLAGS_s390x-unknown-linux-gnu: -march=z196 -mtune=z196
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out ../dist --find-interpreter
+          working-directory: minisearch
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          manylinux: auto
       - name: Build wheels
+        if: matrix.platform.target != 's390x'
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
@@ -90,8 +103,6 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: macos-13
-            target: x86_64
           - runner: macos-14
             target: aarch64
     steps:
