@@ -11,7 +11,6 @@ use pyo3::exceptions::{PySystemError, PyValueError};
 use pyo3::prelude::*;
 use std::fs::remove_dir_all;
 use std::io::{self, prelude::*};
-use std::os::unix::prelude::FileExt;
 use std::sync::Arc;
 use std::time::SystemTimeError;
 use std::{
@@ -24,6 +23,7 @@ use ulid::Ulid;
 
 use crate::config::Config;
 use crate::errors::{BincodeDecodeError, BincodeEncodeError, CompressException};
+use crate::utils::fileext::FileExt;
 
 #[derive(Error, Debug)]
 pub enum DocumentBufferError {
