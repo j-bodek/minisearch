@@ -131,6 +131,11 @@ jobs:
         with:
           name: sdist
           path: dist/*.tar.gz
+      - name: Debug dist
+        run: |
+          pwd
+          ls -lah
+          ls -lah dist || true
 
   release:
     name: Release
@@ -145,10 +150,15 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Debug downloaded artifacts
+        run: |
+          ls -Rlah artifacts || true
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: "artifacts/**/**/*.whl artifacts/**/**/*.tar.gz"
+          subject-path: |
+            artifacts/**/*.whl
+            artifacts/**/*.tar.gz
       - name: Publish to PyPI
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: PyO3/maturin-action@v1
