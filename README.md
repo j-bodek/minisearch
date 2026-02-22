@@ -1,6 +1,13 @@
 # Minisearch
 
-Minisearch is a lightweight, local full-text search library for Python written in Rust. It provides a simple API for indexing text and running ranked searches without external services or infrastructure.
+Minisearch is a lightweight, local full-text search library for Python written in Rust with no external Python dependencies. It provides a simple API for indexing text and running ranked searches without external services or infrastructure.
+
+
+## Installation
+
+```bash
+pip install minisearch
+```
 
 ## Documentation
 
